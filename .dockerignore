@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+.agents
+.codex
+deploy
+docs
+mobile
+**/*_test.go
+**/.DS_Store
+**/.dart_tool
+**/build

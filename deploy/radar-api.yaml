@@ -1,0 +1,177 @@
+# This manifest is intentionally deployment-only. Applying it is a manual,
+# operator-approved action; CI only publishes the container image to GHCR.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: radar-api
+  namespace: default
+data:
+  RADAR_LISTEN_ADDR: "0.0.0.0:8080"
+  RADAR_PUBLIC_BASE_URL: "https://radar.lystic.dev"
+  RADAR_NWS_BASE_URL: "https://api.weather.gov"
+  RADAR_WMS_BASE_URL: "https://opengeo.ncep.noaa.gov/geoserver"
+  RADAR_STATIONS_URL: "https://opengeo.ncep.noaa.gov/geoserver/nws/ows?request=GetFeature&service=WFS&typeName=nws%3Aradar_sites&version=1.0.0&outputFormat=application%2Fjson"
+  RADAR_USER_AGENT: "radar.lystic.dev/1.0 (+https://radar.lystic.dev)"
+  RADAR_ALLOWED_ORIGINS: "*"
+  # NWS asks clients not to poll alerts more often than every 30 seconds.
+  RADAR_ALERT_TTL: "30s"
+  # Fill alerts that NWS publishes by affected zone instead of inline polygon.
+  RADAR_ALERT_ZONE_TTL: "24h"
+  RADAR_ALERT_ZONE_TIMEOUT: "3s"
+  RADAR_ALERT_ZONE_FAILURE_TTL: "1m"
+  RADAR_ALERT_ZONE_MAX_FETCHES: "64"
+  RADAR_ALERT_ZONE_CONCURRENCY: "8"
+  RADAR_UPDATE_POLL: "15s"
+  RADAR_TILE_TTL: "20s"
+  RADAR_METADATA_TTL: "15s"
+  # A successfully fetched but old scan is visibly marked stale in the app.
+  RADAR_STALE_AFTER: "15m"
+  RADAR_STATION_TTL: "24h"
+  RADAR_STALE_TTL: "10m"
+  RADAR_UPSTREAM_TIMEOUT: "8s"
+  RADAR_SHUTDOWN_TIMEOUT: "10s"
+  RADAR_CACHE_MAX_ENTRIES: "2048"
+  RADAR_CACHE_MAX_MIB: "128"
+  RADAR_MAX_UPSTREAM_MIB: "16"
+  RADAR_TILE_MAX_ZOOM: "16"
+  # RIDGE II only publishes WSR-88D SR_BREF/SR_BVEL at the 0.5 degree tilt.
+  # Do not add fake elevations here. Higher tilts require decoded Level-II data.
+  RADAR_REFLECTIVITY_LAYERS: "0.5:sr_bref"
+  RADAR_VELOCITY_LAYERS: "0.5:sr_bvel"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radar-api
+  namespace: default
+  annotations:
+    keel.sh/trigger: poll
+    keel.sh/policy: force
+    keel.sh/match-tag: "true"
+    keel.sh/pollSchedule: "@every 1m"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: radar-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: radar-api
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: radar-api
+          image: ghcr.io/keganhollern/radar-app:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: radar-api
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: radar-api
+  namespace: default
+spec:
+  selector:
+    app: radar-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: radar-api
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: radar-api
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: radar-api
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: radar.lystic.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: radar-api
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - radar.lystic.dev
+      secretName: lystic-wildcard-tls
