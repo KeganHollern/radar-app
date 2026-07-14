@@ -12,8 +12,8 @@ const _weatherAttributions = [
   ),
 ];
 
-/// Replaces MapLibre's platform-owned attribution hit target with one that is
-/// reliable inside Flutter's platform-view stack and clearly names its purpose.
+/// Replaces MapLibre's platform-owned attribution hit target with a compact,
+/// reliable Flutter control. Full provider credits remain in the opened panel.
 class MapAttributionButton extends StatelessWidget {
   const MapAttributionButton({
     required this.credit,
@@ -33,35 +33,23 @@ class MapAttributionButton extends StatelessWidget {
       onTap: onPressed,
       excludeSemantics: true,
       child: Material(
-        color: Flexoki.black.withValues(alpha: 0.92),
-        shape: const StadiumBorder(side: BorderSide(color: Flexoki.base300)),
-        clipBehavior: Clip.antiAlias,
+        color: Flexoki.base100,
+        elevation: 9,
+        shadowColor: Colors.black87,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: Flexoki.base300),
+        ),
         child: InkWell(
           key: const ValueKey('map-attribution-button'),
           onTap: onPressed,
-          child: SizedBox(
-            height: 48,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 11),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    credit,
-                    style: const TextStyle(
-                      color: Flexoki.base700,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(width: 5),
-                  const Icon(
-                    Icons.info_outline_rounded,
-                    size: 16,
-                    color: Flexoki.base500,
-                  ),
-                ],
-              ),
+          borderRadius: BorderRadius.circular(18),
+          child: const SizedBox.square(
+            dimension: 64,
+            child: Icon(
+              Icons.info_outline_rounded,
+              size: 28,
+              color: Flexoki.paper,
             ),
           ),
         ),

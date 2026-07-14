@@ -5,7 +5,7 @@ import 'package:radar_mobile/models/data_attribution.dart';
 import 'package:radar_mobile/widgets/map_attribution.dart';
 
 void main() {
-  testWidgets('persistent credit is accessible and responds to taps', (
+  testWidgets('compact source button is accessible and responds to taps', (
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
@@ -21,16 +21,14 @@ void main() {
       ),
     );
 
-    expect(find.text('© OpenStreetMap'), findsOneWidget);
+    expect(find.byIcon(Icons.info_outline_rounded), findsOneWidget);
     expect(
       find.bySemanticsLabel('© OpenStreetMap; map and weather data sources'),
       findsOneWidget,
     );
     expect(
-      tester
-          .getSize(find.byKey(const ValueKey('map-attribution-button')))
-          .height,
-      greaterThanOrEqualTo(48),
+      tester.getSize(find.byKey(const ValueKey('map-attribution-button'))),
+      const Size.square(64),
     );
 
     await tester.tap(find.byKey(const ValueKey('map-attribution-button')));

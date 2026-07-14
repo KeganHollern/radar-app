@@ -409,7 +409,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                     AttributionButtonPosition.bottomRight,
                 // maplibre_gl exposes ornament margins but no way to disable
                 // its native attribution button. Move that broken duplicate
-                // outside the viewport; the persistent Flutter credit below
+                // outside the viewport; the compact Flutter source button
                 // supplies the visible, accessible attribution interaction.
                 attributionButtonMargins: const Point(-64, -64),
                 foregroundLoadColor: Flexoki.black,

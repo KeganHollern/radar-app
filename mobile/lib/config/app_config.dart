@@ -13,7 +13,7 @@ final class AppConfig {
     defaultValue: 'https://tiles.openfreemap.org/styles/dark',
   );
 
-  /// Compact credit that remains visible over the map from first render.
+  /// Compact credit announced by the map source button.
   static const String mapAttributionCompact = String.fromEnvironment(
     'MAP_ATTRIBUTION_COMPACT',
     defaultValue: '© OpenStreetMap',
