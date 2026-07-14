@@ -31,6 +31,22 @@ Hawaii, Caribbean/Puerto Rico, and Guam RIDGE II layers. The aggregate manifest
 includes per-region timestamps, uses the oldest available component for its
 overall age, and derives its generation from every regional timestamp.
 
+The aggregate `timestamp` is required. Each regional WMS request is pinned to
+the exact observation encoded by that generation. Zoom 7 and above selects the
+tile's local US radar region; national zooms 0-6 fetch and composite all
+available regions at their individual observation times. Recently observed
+aggregate generations are retained for 15 minutes so requests split between
+Kubernetes replicas during a rollover keep rendering the same pixels. Unknown
+or expired generations are rejected instead of serving current data under an
+old URL.
+
+At zoom 9 and above, the aggregate view optionally overlays the nearest
+covering station's 0.5-degree super-resolution reflectivity scan. The station
+scan is pinned at or immediately before the same regional observation, weak
+signals below 15 dBZ are removed, and scans more than 10 minutes behind are not
+used. Station enrichment has a two-second budget and falls back to the current
+regional mosaic on timeout, malformed data, stale data, or station outage.
+
 For station reflectivity and velocity, `timestamp` is the observation generation
 returned by `latest` and is required. The backend verifies that the scan is in
 NOAA's current WMS capabilities, rejects future/unlisted scans, and forwards the
@@ -40,10 +56,9 @@ loading every zoom tile from one immutable scan. This short handoff is not a
 history API and no timeline is exposed. If a requested scan is newer than one
 replica's short metadata cache, that replica performs one bounded capabilities
 recheck before applying the same strict validation. Older unlisted timestamps
-are rejected directly rather than amplified into upstream requests.
-Aggregate tiles retain their opaque
-multi-region generation token and current mosaic behavior because the regional
-layers do not share one exact observation time.
+are rejected directly rather than amplified into upstream requests. Aggregate
+generations remain opaque because they encode several distinct regional
+observation times.
 
 Station and alert endpoints return GeoJSON. Each alert keeps the complete NWS
 properties and gains `radarCategory` and `radarColor`. For an alert without

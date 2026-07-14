@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,6 +110,60 @@ func TestFetcherServesStaleOnInvalidUpstreamResponse(t *testing.T) {
 	}
 	if result.State != cache.Stale || string(result.Value.Body) != "old png" {
 		t.Fatalf("unexpected stale result: %#v", result)
+	}
+}
+
+func TestFetcherDeriveCachesAndCoalescesBuilds(t *testing.T) {
+	fetcher := NewFetcher(http.DefaultClient, cache.New(32, 1<<20), "radar-test", 1<<20, time.Minute)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	var builds atomic.Int32
+	build := func(context.Context) (Result, error) {
+		builds.Add(1)
+		startOnce.Do(func() { close(started) })
+		<-release
+		return Result{Value: cache.Value{Body: []byte("derived")}}, nil
+	}
+
+	const callers = 16
+	results := make(chan Result, callers)
+	errors := make(chan error, callers)
+	var wait sync.WaitGroup
+	wait.Add(callers)
+	for range callers {
+		go func() {
+			defer wait.Done()
+			result, err := fetcher.Derive(context.Background(), "composite", time.Minute, "image/png", build)
+			results <- result
+			errors <- err
+		}()
+	}
+	<-started
+	close(release)
+	wait.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for result := range results {
+		if string(result.Value.Body) != "derived" || result.Value.ContentType != "image/png" {
+			t.Fatalf("unexpected derived result: %#v", result)
+		}
+	}
+	if builds.Load() != 1 {
+		t.Fatalf("derived value built %d times, want 1", builds.Load())
+	}
+
+	cached, err := fetcher.Derive(context.Background(), "composite", time.Minute, "image/png", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.State != cache.Hit || builds.Load() != 1 {
+		t.Fatalf("cached derived result state = %q, builds = %d", cached.State, builds.Load())
 	}
 }
 

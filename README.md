@@ -23,7 +23,8 @@ There are deliberately no forecasts, animation loops, or historical timeline.
 - dark, pannable/zoomable MapLibre map with roads and place labels
 - device location dot, one-time local startup focus, and opt-in follow mode that
   keeps the current zoom
-- current MRMS/RIDGE aggregate reflectivity
+- current MRMS/RIDGE aggregate reflectivity, enriched with local
+  super-resolution station detail when zoomed in
 - tap-to-select WSR-88D stations with current reflectivity and radial velocity
 - active NWS alert polygons, persisted per-type visibility settings, overlap
   selection, event colors, and tap-through alert details

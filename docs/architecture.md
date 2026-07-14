@@ -25,8 +25,8 @@ layer names as permanent.
 ### Aggregate reflectivity
 
 Use the NWS CloudGIS/RIDGE II WMS layers for quality-controlled base
-reflectivity. The API requests the five regional layers together so the same
-source covers CONUS, Alaska, Hawaii, Caribbean/Puerto Rico, and Guam:
+reflectivity. The API uses all five regional layers so the same source covers
+CONUS, Alaska, Hawaii, Caribbean/Puerto Rico, and Guam:
 
 - service root: `https://opengeo.ncep.noaa.gov/geoserver`
 - regional layers: `conus_bref_qcd`, `alaska_bref_qcd`, `hawaii_bref_qcd`,
@@ -38,6 +38,23 @@ NWS says the composite radar images are produced by Multi-Radar/Multi-Sensor
 echoes removed. The same directory exposes the individual station WMS and radar
 site WFS. See the [NWS OGC service directory](https://opengeo.ncep.noaa.gov/geoserver/www/index.html)
 and [RIDGE II product descriptions](https://www.weather.gov/radarfaq/).
+
+The regional mosaic is approximately a 0.01-degree (roughly 1 km) grid, while
+the station `SR_BREF` source is approximately 0.00135 degrees (roughly 150 m).
+Requesting a larger mosaic image would only interpolate its existing cells, so
+the API uses a real zoom-dependent detail tier instead. At zooms 0-6 it pins and
+composites every available regional layer at that aggregate generation's exact
+component times. At zoom 7 and above it requests the exact local regional layer.
+At zoom 9 and above it can additionally overlay one covering station's
+super-resolution reflectivity scan at or immediately before the regional
+observation. The station overlay is filtered below 15 dBZ, limited to a
+two-second enrichment budget, and omitted when it is stale or unavailable. The
+regional mosaic always remains the fallback.
+
+This high-zoom overlay is a presentation detail tier, not a different mode or a
+history feature. It remains anchored to the aggregate generation in the tile
+URL, and recently observed aggregate generations are retained briefly so both
+API replicas can finish an in-flight map consistently across a scan rollover.
 
 The production alternative is to ingest the current MRMS GRIB2 artifact directly,
 for example `MRMS_ReflectivityAtLowestAltitude.latest.grib2.gz`, render immutable
@@ -243,8 +260,9 @@ upstream URLs or accept an unrestricted WMS query string from clients.
 - Cache keys include product, station, elevation, tile coordinate, and immutable
   upstream generation. `latest` metadata should have a short cache lifetime;
   generation-addressed tiles may be cached much longer.
-- Require and validate the station generation on every station tile, and pin the
-  upstream WMS `TIME`; never resolve `latest` independently for each station tile.
+- Require and validate the aggregate or station generation on every radar tile,
+  and pin every upstream WMS `TIME`; never resolve `latest` independently for an
+  individual tile.
 - Coalesce concurrent cache misses so hundreds of clients do not create hundreds
   of identical upstream WMS requests.
 - Surface `observedAt`, `receivedAt`, `ageSeconds`, and `stale` in manifests.

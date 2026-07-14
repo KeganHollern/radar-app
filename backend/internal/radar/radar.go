@@ -71,12 +71,25 @@ var aggregateRegions = []aggregateRegion{
 }
 
 type Service struct {
-	config  config.Config
-	fetcher *upstream.Fetcher
+	config                 config.Config
+	fetcher                *upstream.Fetcher
+	aggregateDetailTimeout time.Duration
+	aggregateVersionsMu    sync.Mutex
+	aggregateVersions      map[string]rememberedAggregateGeneration
+}
+
+type rememberedAggregateGeneration struct {
+	latest   Latest
+	lastSeen time.Time
 }
 
 func NewService(c config.Config, fetcher *upstream.Fetcher) *Service {
-	return &Service{config: c, fetcher: fetcher}
+	return &Service{
+		config:                 c,
+		fetcher:                fetcher,
+		aggregateDetailTimeout: aggregateDetailTimeout,
+		aggregateVersions:      make(map[string]rememberedAggregateGeneration),
+	}
 }
 
 func (s *Service) Normalize(selection Selection) (Selection, error) {
@@ -122,11 +135,17 @@ func (s *Service) Tile(ctx context.Context, selection Selection, generation stri
 		if err != nil {
 			return upstream.Result{}, err
 		}
-		endpoint, layer := s.tileEndpointLayer(selection)
-		query := wmsQuery(layer, tileBounds(z, x, y))
-		target := endpoint + "?" + query.Encode()
-		key := fmt.Sprintf("tile:%s:%s:%s:%s:%d:%d:%d", selection.Product, selection.Station, selection.Elevation, latest.Version, z, x, y)
-		return s.fetcher.Get(ctx, key, target, "image/png", s.config.TileTTL, "image/png")
+		// Aggregate versions encode all regional observation anchors. Retain
+		// recently observed manifests across a rollover so parallel requests split
+		// between replicas still render the exact generation in their tile URL.
+		if generation == "" || generation != strings.TrimSpace(generation) {
+			return upstream.Result{}, fmt.Errorf("%w: aggregate generation is unavailable; refresh latest radar metadata", ErrInvalidGeneration)
+		}
+		resolved, ok := s.resolveAggregateGeneration(generation, latest)
+		if !ok {
+			return upstream.Result{}, fmt.Errorf("%w: aggregate generation is unavailable; refresh latest radar metadata", ErrInvalidGeneration)
+		}
+		return s.aggregateTile(ctx, selection, resolved, z, x, y)
 	}
 	resolved, err := s.resolveTileGeneration(ctx, selection, generation)
 	if err != nil {
@@ -357,7 +376,56 @@ func (s *Service) aggregateLatest(ctx context.Context, selection Selection) (Lat
 	manifest.Stale = manifest.Stale || stale
 	manifest.Components = components
 	manifest.MissingRegions = missing
+	s.rememberAggregateGeneration(manifest)
 	return manifest, nil
+}
+
+func (s *Service) rememberAggregateGeneration(latest Latest) {
+	now := time.Now().UTC()
+	s.aggregateVersionsMu.Lock()
+	defer s.aggregateVersionsMu.Unlock()
+	if s.aggregateVersions == nil {
+		s.aggregateVersions = make(map[string]rememberedAggregateGeneration)
+	}
+	for version, remembered := range s.aggregateVersions {
+		if version != latest.Version && now.Sub(remembered.lastSeen) > tileGenerationGrace {
+			delete(s.aggregateVersions, version)
+		}
+	}
+	s.aggregateVersions[latest.Version] = rememberedAggregateGeneration{
+		latest:   cloneLatest(latest),
+		lastSeen: now,
+	}
+}
+
+func (s *Service) resolveAggregateGeneration(generation string, current Latest) (Latest, bool) {
+	if generation == current.Version {
+		return current, true
+	}
+	now := time.Now().UTC()
+	s.aggregateVersionsMu.Lock()
+	defer s.aggregateVersionsMu.Unlock()
+	remembered, ok := s.aggregateVersions[generation]
+	if !ok {
+		return Latest{}, false
+	}
+	if now.Sub(remembered.lastSeen) > tileGenerationGrace {
+		delete(s.aggregateVersions, generation)
+		return Latest{}, false
+	}
+	return cloneLatest(remembered.latest), true
+}
+
+func cloneLatest(latest Latest) Latest {
+	if latest.Components != nil {
+		components := make(map[string]LatestComponent, len(latest.Components))
+		for name, component := range latest.Components {
+			components[name] = component
+		}
+		latest.Components = components
+	}
+	latest.MissingRegions = append([]string(nil), latest.MissingRegions...)
+	return latest
 }
 
 func aggregateVersion(observations map[string]time.Time, missing []string) string {

@@ -67,6 +67,68 @@ func (f *Fetcher) Refresh(ctx context.Context, key, target, accept string, ttl t
 	return f.get(ctx, key, target, accept, ttl, true, contentTypePrefixes)
 }
 
+// Derive caches and coalesces a response computed from other fetched values.
+// It is intended for bounded transformations such as compositing already
+// validated radar tiles, where repeating image work for every cache hit would
+// waste CPU even though the source generations are immutable in the key.
+func (f *Fetcher) Derive(ctx context.Context, key string, ttl time.Duration, contentType string, build func(context.Context) (Result, error)) (Result, error) {
+	now := time.Now().UTC()
+	if value, state, ok := f.cache.Get(key, now); ok && state == cache.Hit {
+		return Result{Value: value, State: cache.Hit}, nil
+	}
+
+	inflightKey := "derive:" + key
+	f.mu.Lock()
+	if current, ok := f.inflight[inflightKey]; ok {
+		f.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		case <-current.done:
+			return current.result, current.err
+		}
+	}
+	current := &call{done: make(chan struct{})}
+	f.inflight[inflightKey] = current
+	f.mu.Unlock()
+
+	current.result, current.err = f.derive(ctx, key, ttl, contentType, build)
+	close(current.done)
+	f.mu.Lock()
+	delete(f.inflight, inflightKey)
+	f.mu.Unlock()
+	return current.result, current.err
+}
+
+func (f *Fetcher) derive(ctx context.Context, key string, ttl time.Duration, contentType string, build func(context.Context) (Result, error)) (Result, error) {
+	now := time.Now().UTC()
+	staleValue, staleState, hasStale := f.cache.Get(key, now)
+	if hasStale && staleState == cache.Hit {
+		return Result{Value: staleValue, State: cache.Hit}, nil
+	}
+
+	result, err := build(ctx)
+	if err != nil {
+		if hasStale && staleState == cache.Stale {
+			return Result{Value: staleValue, State: cache.Stale}, nil
+		}
+		return Result{}, err
+	}
+	now = time.Now().UTC()
+	result.Value.ContentType = contentType
+	result.Value.ETag = ""
+	result.Value.LastModified = ""
+	result.Value.FetchedAt = now
+	result.Value.CheckedAt = now
+	result.Value.ExpiresAt = now.Add(ttl)
+	result.Value.StaleUntil = now.Add(ttl + f.staleTTL)
+	f.cache.Put(key, result.Value)
+	if result.State == "" {
+		result.State = cache.Miss
+	}
+	return result, nil
+}
+
 func (f *Fetcher) get(ctx context.Context, key, target, accept string, ttl time.Duration, force bool, contentTypePrefixes []string) (Result, error) {
 	now := time.Now().UTC()
 	if value, state, ok := f.cache.Get(key, now); !force && ok && state == cache.Hit {
