@@ -57,13 +57,28 @@ func (f *Fetcher) Cached(key string) (Result, bool) {
 }
 
 func (f *Fetcher) Get(ctx context.Context, key, target, accept string, ttl time.Duration, contentTypePrefixes ...string) (Result, error) {
+	return f.get(ctx, key, target, accept, ttl, false, contentTypePrefixes)
+}
+
+// Refresh performs one conditional upstream recheck even when key is still
+// fresh in the local cache. Forced refreshes coalesce separately from ordinary
+// reads and update the same cached value.
+func (f *Fetcher) Refresh(ctx context.Context, key, target, accept string, ttl time.Duration, contentTypePrefixes ...string) (Result, error) {
+	return f.get(ctx, key, target, accept, ttl, true, contentTypePrefixes)
+}
+
+func (f *Fetcher) get(ctx context.Context, key, target, accept string, ttl time.Duration, force bool, contentTypePrefixes []string) (Result, error) {
 	now := time.Now().UTC()
-	if value, state, ok := f.cache.Get(key, now); ok && state == cache.Hit {
+	if value, state, ok := f.cache.Get(key, now); !force && ok && state == cache.Hit {
 		return Result{Value: value, State: cache.Hit}, nil
 	}
 
+	inflightKey := key
+	if force {
+		inflightKey = "refresh:" + key
+	}
 	f.mu.Lock()
-	if current, ok := f.inflight[key]; ok {
+	if current, ok := f.inflight[inflightKey]; ok {
 		f.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -73,18 +88,18 @@ func (f *Fetcher) Get(ctx context.Context, key, target, accept string, ttl time.
 		}
 	}
 	current := &call{done: make(chan struct{})}
-	f.inflight[key] = current
+	f.inflight[inflightKey] = current
 	f.mu.Unlock()
 
-	current.result, current.err = f.fetch(ctx, key, target, accept, ttl, contentTypePrefixes)
+	current.result, current.err = f.fetch(ctx, key, target, accept, ttl, force, contentTypePrefixes)
 	close(current.done)
 	f.mu.Lock()
-	delete(f.inflight, key)
+	delete(f.inflight, inflightKey)
 	f.mu.Unlock()
 	return current.result, current.err
 }
 
-func (f *Fetcher) fetch(ctx context.Context, key, target, accept string, ttl time.Duration, contentTypePrefixes []string) (Result, error) {
+func (f *Fetcher) fetch(ctx context.Context, key, target, accept string, ttl time.Duration, force bool, contentTypePrefixes []string) (Result, error) {
 	now := time.Now().UTC()
 	staleValue, staleState, hasStale := f.cache.Get(key, now)
 
@@ -94,6 +109,9 @@ func (f *Fetcher) fetch(ctx context.Context, key, target, accept string, ttl tim
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", f.userAgent)
+	if force {
+		req.Header.Set("Cache-Control", "no-cache")
+	}
 	if hasStale {
 		if staleValue.ETag != "" {
 			req.Header.Set("If-None-Match", staleValue.ETag)

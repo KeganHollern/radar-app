@@ -23,6 +23,10 @@ const aggregateLayer = "conus_bref_qcd"
 
 const aggregateTileLayers = "conus:conus_bref_qcd,alaska:alaska_bref_qcd,hawaii:hawaii_bref_qcd,carib:carib_bref_qcd,guam:guam_bref_qcd"
 
+const tileGenerationGrace = 15 * time.Minute
+
+var ErrInvalidGeneration = errors.New("invalid radar generation")
+
 type Selection struct {
 	Product   string
 	Station   string
@@ -105,7 +109,7 @@ func (s *Service) Normalize(selection Selection) (Selection, error) {
 	}
 }
 
-func (s *Service) Tile(ctx context.Context, selection Selection, z, x, y int) (upstream.Result, error) {
+func (s *Service) Tile(ctx context.Context, selection Selection, generation string, z, x, y int) (upstream.Result, error) {
 	selection, err := s.Normalize(selection)
 	if err != nil {
 		return upstream.Result{}, err
@@ -113,17 +117,25 @@ func (s *Service) Tile(ctx context.Context, selection Selection, z, x, y int) (u
 	if err := validateTile(z, x, y, s.config.TileMaxZoom); err != nil {
 		return upstream.Result{}, err
 	}
-	// Resolve the current generation before reading a tile. The client-provided
-	// timestamp is only a cache buster and is never forwarded; this manifest
-	// lookup makes the server cache generation-aware without exposing history.
-	latest, err := s.Latest(ctx, selection)
+	if selection.Product == "aggregate" {
+		latest, err := s.aggregateLatest(ctx, selection)
+		if err != nil {
+			return upstream.Result{}, err
+		}
+		endpoint, layer := s.tileEndpointLayer(selection)
+		query := wmsQuery(layer, tileBounds(z, x, y))
+		target := endpoint + "?" + query.Encode()
+		key := fmt.Sprintf("tile:%s:%s:%s:%s:%d:%d:%d", selection.Product, selection.Station, selection.Elevation, latest.Version, z, x, y)
+		return s.fetcher.Get(ctx, key, target, "image/png", s.config.TileTTL, "image/png")
+	}
+	resolved, err := s.resolveTileGeneration(ctx, selection, generation)
 	if err != nil {
 		return upstream.Result{}, err
 	}
 	endpoint, layer := s.tileEndpointLayer(selection)
-	query := wmsQuery(layer, tileBounds(z, x, y))
+	query := pinnedWMSQuery(layer, tileBounds(z, x, y), resolved.observedAt)
 	target := endpoint + "?" + query.Encode()
-	key := fmt.Sprintf("tile:%s:%s:%s:%s:%d:%d:%d", selection.Product, selection.Station, selection.Elevation, latest.Version, z, x, y)
+	key := fmt.Sprintf("tile:%s:%s:%s:%s:%d:%d:%d", selection.Product, selection.Station, selection.Elevation, generation, z, x, y)
 	result, err := s.fetcher.Get(ctx, key, target, "image/png", s.config.TileTTL, "image/png")
 	if err != nil {
 		return upstream.Result{}, err
@@ -134,6 +146,82 @@ func (s *Service) Tile(ctx context.Context, selection Selection, z, x, y int) (u
 	}
 	result.Value.Body = filtered
 	return result, nil
+}
+
+type resolvedTileGeneration struct {
+	observedAt time.Time
+}
+
+func (s *Service) resolveTileGeneration(ctx context.Context, selection Selection, generation string) (resolvedTileGeneration, error) {
+	requested, err := parseGenerationTime(selection.Product, generation)
+	if err != nil {
+		return resolvedTileGeneration{}, err
+	}
+
+	endpoint, layer := s.capabilitiesEndpointLayer(selection)
+	latest, result, err := s.fetchLatestLayer(ctx, endpoint, layer)
+	if err != nil {
+		return resolvedTileGeneration{}, err
+	}
+	if requested.After(latest) {
+		latest, result, err = s.refreshLatestLayer(ctx, endpoint, layer)
+		if err != nil {
+			return resolvedTileGeneration{}, err
+		}
+	}
+	if err := validateGenerationTime(requested, latest); err != nil {
+		return resolvedTileGeneration{}, err
+	}
+	available, err := layerObservationTimes(result.Value.Body, layer)
+	if err != nil {
+		return resolvedTileGeneration{}, err
+	}
+	if containsObservation(available, requested) {
+		return resolvedTileGeneration{observedAt: requested}, nil
+	}
+	return resolvedTileGeneration{}, fmt.Errorf("%w: scan %s is unavailable", ErrInvalidGeneration, requested.Format(time.RFC3339Nano))
+}
+
+func parseGenerationTime(product, generation string) (time.Time, error) {
+	trimmed := strings.TrimSpace(generation)
+	if generation != trimmed {
+		return time.Time{}, fmt.Errorf("%w: malformed timestamp", ErrInvalidGeneration)
+	}
+	generation = trimmed
+	if generation == "" || len(generation) > 64 {
+		return time.Time{}, fmt.Errorf("%w: timestamp is required", ErrInvalidGeneration)
+	}
+	if product == "aggregate" {
+		return time.Time{}, fmt.Errorf("%w: aggregate generations are not station timestamps", ErrInvalidGeneration)
+	}
+	value, err := strconv.ParseInt(generation, 10, 64)
+	if err != nil || value <= 0 {
+		return time.Time{}, fmt.Errorf("%w: malformed timestamp", ErrInvalidGeneration)
+	}
+	if strconv.FormatInt(value, 10) != generation {
+		return time.Time{}, fmt.Errorf("%w: malformed timestamp", ErrInvalidGeneration)
+	}
+	return time.UnixMilli(value).UTC(), nil
+}
+
+func containsObservation(observations []time.Time, target time.Time) bool {
+	for _, observedAt := range observations {
+		if observedAt.Equal(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateGenerationTime(requested, latest time.Time) error {
+	age := latest.Sub(requested)
+	if age < 0 {
+		return fmt.Errorf("%w: timestamp is newer than the latest scan", ErrInvalidGeneration)
+	}
+	if age > tileGenerationGrace {
+		return fmt.Errorf("%w: timestamp has expired; refresh latest radar metadata", ErrInvalidGeneration)
+	}
+	return nil
 }
 
 func (s *Service) Latest(ctx context.Context, selection Selection) (Latest, error) {
@@ -153,6 +241,14 @@ func (s *Service) Latest(ctx context.Context, selection Selection) (Latest, erro
 }
 
 func (s *Service) fetchLatestLayer(ctx context.Context, endpoint, layer string) (time.Time, upstream.Result, error) {
+	return s.fetchLayerMetadata(ctx, endpoint, layer, false)
+}
+
+func (s *Service) refreshLatestLayer(ctx context.Context, endpoint, layer string) (time.Time, upstream.Result, error) {
+	return s.fetchLayerMetadata(ctx, endpoint, layer, true)
+}
+
+func (s *Service) fetchLayerMetadata(ctx context.Context, endpoint, layer string, refresh bool) (time.Time, upstream.Result, error) {
 	query := url.Values{
 		"request": {"GetCapabilities"},
 		"service": {"WMS"},
@@ -160,7 +256,13 @@ func (s *Service) fetchLatestLayer(ctx context.Context, endpoint, layer string) 
 	}
 	target := endpoint + "?" + query.Encode()
 	key := "capabilities:" + endpoint + ":" + layer
-	result, err := s.fetcher.Get(ctx, key, target, "application/xml,text/xml", s.config.MetadataTTL, "application/xml", "text/xml")
+	var result upstream.Result
+	var err error
+	if refresh {
+		result, err = s.fetcher.Refresh(ctx, key, target, "application/xml,text/xml", s.config.MetadataTTL, "application/xml", "text/xml")
+	} else {
+		result, err = s.fetcher.Get(ctx, key, target, "application/xml,text/xml", s.config.MetadataTTL, "application/xml", "text/xml")
+	}
 	if err != nil {
 		return time.Time{}, upstream.Result{}, err
 	}
@@ -383,6 +485,12 @@ func wmsQuery(layer string, b bounds) url.Values {
 	}
 }
 
+func pinnedWMSQuery(layer string, b bounds, observedAt time.Time) url.Values {
+	query := wmsQuery(layer, b)
+	query.Set("time", observedAt.UTC().Format(time.RFC3339Nano))
+	return query
+}
+
 func formatBounds(b bounds) string {
 	values := []float64{b.minX, b.minY, b.maxX, b.maxY}
 	parts := make([]string, len(values))
@@ -411,29 +519,70 @@ type wmsDimension struct {
 }
 
 func latestLayerTime(body []byte, layerName string) (time.Time, error) {
+	dimension, err := layerTimeDimension(body, layerName)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if candidate := strings.TrimSpace(dimension.Default); candidate != "" {
+		observedAt, err := time.Parse(time.RFC3339Nano, candidate)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("decode latest WMS observation time: %w", err)
+		}
+		return observedAt.UTC(), nil
+	}
+	observations, err := layerObservationTimes(body, layerName)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return observations[len(observations)-1], nil
+}
+
+func layerObservationTimes(body []byte, layerName string) ([]time.Time, error) {
+	dimension, err := layerTimeDimension(body, layerName)
+	if err != nil {
+		return nil, err
+	}
+	values := strings.Split(strings.TrimSpace(dimension.Values), ",")
+	observations := make([]time.Time, 0, len(values)+1)
+	seen := make(map[int64]struct{}, len(values)+1)
+	for _, raw := range append(values, dimension.Default) {
+		candidate := strings.TrimSpace(raw)
+		if candidate == "" {
+			continue
+		}
+		observedAt, err := time.Parse(time.RFC3339Nano, candidate)
+		if err != nil {
+			return nil, fmt.Errorf("decode WMS observation time: %w", err)
+		}
+		observedAt = observedAt.UTC()
+		if _, ok := seen[observedAt.UnixNano()]; ok {
+			continue
+		}
+		seen[observedAt.UnixNano()] = struct{}{}
+		observations = append(observations, observedAt)
+	}
+	if len(observations) == 0 {
+		return nil, fmt.Errorf("WMS layer %q publishes an empty time dimension", layerName)
+	}
+	sort.Slice(observations, func(i, j int) bool { return observations[i].Before(observations[j]) })
+	return observations, nil
+}
+
+func layerTimeDimension(body []byte, layerName string) (wmsDimension, error) {
 	var document capabilities
 	if err := xml.Unmarshal(body, &document); err != nil {
-		return time.Time{}, fmt.Errorf("decode WMS capabilities: %w", err)
+		return wmsDimension{}, fmt.Errorf("decode WMS capabilities: %w", err)
 	}
 	layer := findLayer(document.Capability.Layer, layerName)
 	if layer == nil {
-		return time.Time{}, fmt.Errorf("WMS layer %q is unavailable", layerName)
+		return wmsDimension{}, fmt.Errorf("WMS layer %q is unavailable", layerName)
 	}
 	for _, dimension := range layer.Dimensions {
 		if strings.EqualFold(dimension.Name, "time") {
-			candidate := strings.TrimSpace(dimension.Default)
-			if candidate == "" {
-				values := strings.Split(strings.TrimSpace(dimension.Values), ",")
-				candidate = strings.TrimSpace(values[len(values)-1])
-			}
-			observedAt, err := time.Parse(time.RFC3339Nano, candidate)
-			if err != nil {
-				return time.Time{}, fmt.Errorf("decode latest WMS observation time: %w", err)
-			}
-			return observedAt.UTC(), nil
+			return dimension, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("WMS layer %q does not publish a latest observation time", layerName)
+	return wmsDimension{}, fmt.Errorf("WMS layer %q does not publish a time dimension", layerName)
 }
 
 func findLayer(layer wmsLayer, name string) *wmsLayer {

@@ -6,10 +6,12 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../config/app_config.dart';
 import '../controllers/radar_controller.dart';
+import '../models/alert_selection.dart';
 import '../models/radar_models.dart';
 import '../services/location_service.dart';
 import '../theme/flexoki_theme.dart';
 import '../widgets/radar_legend.dart';
+import '../widgets/settings_panel.dart';
 
 class RadarMapScreen extends StatefulWidget {
   const RadarMapScreen({super.key});
@@ -43,6 +45,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   bool _styleSyncRunning = false;
   bool _styleSyncPending = false;
   bool _forceStyleSync = false;
+  bool _handlingAlertTap = false;
 
   @override
   void initState() {
@@ -233,10 +236,15 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     await map.addRasterLayer(
       _radarSource,
       _radarLayer,
-      const RasterLayerProperties(
+      RasterLayerProperties(
         rasterOpacity: 0.62,
         rasterFadeDuration: 0,
-        rasterResampling: 'linear',
+        // Velocity bins are categorical measurements. Linear interpolation
+        // blends toward/away colors during zoom and can imply values NOAA did
+        // not report, so preserve their nearest rendered sample instead.
+        rasterResampling: _radar.mode == RadarMode.stationVelocity
+            ? 'nearest'
+            : 'linear',
       ),
       belowLayerId: belowLayer,
     );
@@ -264,8 +272,37 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       return;
     }
     if (layerId == _alertsFillLayer || layerId == _alertsLineLayer) {
-      final alert = _radar.alertById(id);
-      if (alert != null) _showAlert(alert);
+      unawaited(_handleAlertTap(point, id));
+    }
+  }
+
+  Future<void> _handleAlertTap(Point<double> point, String fallbackId) async {
+    if (_handlingAlertTap) return;
+    _handlingAlertTap = true;
+    try {
+      List<dynamic> features = const [];
+      try {
+        features =
+            await _map?.queryRenderedFeatures(point, const [
+              _alertsFillLayer,
+            ], null) ??
+            const [];
+      } catch (error) {
+        debugPrint('Unable to query overlapping alerts: $error');
+      }
+      if (!mounted) return;
+      final alerts = resolveAlertsAtTap(
+        renderedFeatures: features,
+        visibleAlerts: _radar.alerts,
+        fallbackId: fallbackId,
+      );
+      if (alerts.length == 1) {
+        _showAlert(alerts.single);
+      } else if (alerts.length > 1) {
+        await _showAlertsAtLocation(alerts);
+      }
+    } finally {
+      _handlingAlertTap = false;
     }
   }
 
@@ -340,6 +377,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                   radar: _radar,
                   onRefresh: _radar.refreshAll,
                   onOpenAlerts: _showAlerts,
+                  onOpenSettings: _showSettings,
                 ),
                 if (_radar.radarError != null) ...[
                   const SizedBox(height: 8),
@@ -416,6 +454,35 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     );
   }
 
+  void _showSettings() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.72,
+        minChildSize: 0.42,
+        maxChildSize: 0.94,
+        builder: (context, scrollController) => StatefulBuilder(
+          builder: (context, setSheetState) => RadarSettingsPanel(
+            scrollController: scrollController,
+            alertTypes: _radar.knownAlertTypes,
+            alertTypeCounts: _radar.alertTypeCounts,
+            isAlertTypeVisible: _radar.isAlertTypeVisible,
+            onAlertTypeChanged: (alertType, visible) {
+              _radar.setAlertTypeVisible(alertType, visible);
+              setSheetState(() {});
+            },
+            onShowAllAlertTypes: () {
+              _radar.showAllAlertTypes();
+              setSheetState(() {});
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showAlerts() {
     showModalBottomSheet<void>(
       context: context,
@@ -449,6 +516,25 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     );
   }
 
+  Future<void> _showAlertsAtLocation(List<WeatherAlert> alerts) async {
+    final selected = await showModalBottomSheet<WeatherAlert>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: min(0.78, 0.24 + alerts.length * 0.14),
+        minChildSize: 0.32,
+        maxChildSize: 0.9,
+        builder: (context, scrollController) => _AlertsAtLocationSheet(
+          alerts: alerts,
+          scrollController: scrollController,
+          onSelect: (alert) => Navigator.pop(context, alert),
+        ),
+      ),
+    );
+    if (selected != null && mounted) _showAlert(selected);
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -469,11 +555,13 @@ class _LiveStatusCard extends StatelessWidget {
     required this.radar,
     required this.onRefresh,
     required this.onOpenAlerts,
+    required this.onOpenSettings,
   });
 
   final RadarController radar;
   final Future<void> Function() onRefresh;
   final VoidCallback onOpenAlerts;
+  final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -592,6 +680,11 @@ class _LiveStatusCard extends StatelessWidget {
                   ),
                 ),
               ),
+            IconButton(
+              tooltip: 'Alert display settings',
+              onPressed: onOpenSettings,
+              icon: const Icon(Icons.settings_outlined),
+            ),
             IconButton(
               tooltip: 'Refresh now',
               onPressed: radar.isLoadingRadar ? null : onRefresh,
@@ -913,6 +1006,51 @@ class _ElevationPicker extends StatelessWidget {
             ),
           )
           .toList(),
+    );
+  }
+}
+
+class _AlertsAtLocationSheet extends StatelessWidget {
+  const _AlertsAtLocationSheet({
+    required this.alerts,
+    required this.scrollController,
+    required this.onSelect,
+  });
+
+  final List<WeatherAlert> alerts;
+  final ScrollController scrollController;
+  final ValueChanged<WeatherAlert> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      controller: scrollController,
+      padding: const EdgeInsets.fromLTRB(18, 2, 18, 28),
+      itemCount: alerts.length + 1,
+      separatorBuilder: (context, index) => const SizedBox(height: 9),
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 5),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Alerts at this location',
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${alerts.length} overlapping alerts · choose one for details',
+                  style: const TextStyle(color: Flexoki.base500),
+                ),
+              ],
+            ),
+          );
+        }
+        final alert = alerts[index - 1];
+        return _AlertListRow(alert: alert, onTap: () => onSelect(alert));
+      },
     );
   }
 }

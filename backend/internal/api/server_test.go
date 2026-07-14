@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -48,6 +50,34 @@ func TestWriteCachedHonorsETag(t *testing.T) {
 	writeCached(second, request, http.StatusOK, body, "text/plain", result, "public, max-age=10")
 	if second.Code != http.StatusNotModified || second.Body.Len() != 0 {
 		t.Fatalf("unexpected conditional response: %d %q", second.Code, second.Body.String())
+	}
+}
+
+func TestStationTileRequiresGeneration(t *testing.T) {
+	c := config.Config{
+		UserAgent:        "radar-test",
+		UpstreamTimeout:  time.Second,
+		StaleTTL:         time.Minute,
+		CacheMaxEntries:  8,
+		CacheMaxBytes:    1 << 20,
+		MaxUpstreamBytes: 1 << 20,
+		TileMaxZoom:      16,
+		Reflectivity:     map[string]string{"0.5": "sr_bref"},
+		Velocity:         map[string]string{"0.5": "sr_bvel"},
+	}
+	server := New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/radar/tiles/velocity/KGRK/0.5/7/30/47.png", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", response.Code, response.Body.String())
+	}
+	var body map[string]map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"]["code"] != "invalid_generation" {
+		t.Fatalf("response = %#v", body)
 	}
 }
 

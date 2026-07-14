@@ -31,9 +31,19 @@ Hawaii, Caribbean/Puerto Rico, and Guam RIDGE II layers. The aggregate manifest
 includes per-region timestamps, uses the oldest available component for its
 overall age, and derives its generation from every regional timestamp.
 
-The `timestamp` tile query is a cache-busting generation hint only. The backend
-never forwards a requested time to NOAA and always asks WMS for its default
-latest image.
+For station reflectivity and velocity, `timestamp` is the observation generation
+returned by `latest` and is required. The backend verifies that the scan is in
+NOAA's current WMS capabilities, rejects future/unlisted scans, and forwards the
+exact observation as the WMS `TIME`. A listed generation remains valid for up to
+15 minutes after a newer scan appears so a map already on screen can finish
+loading every zoom tile from one immutable scan. This short handoff is not a
+history API and no timeline is exposed. If a requested scan is newer than one
+replica's short metadata cache, that replica performs one bounded capabilities
+recheck before applying the same strict validation. Older unlisted timestamps
+are rejected directly rather than amplified into upstream requests.
+Aggregate tiles retain their opaque
+multi-region generation token and current mosaic behavior because the regional
+layers do not share one exact observation time.
 
 Station and alert endpoints return GeoJSON. Each alert keeps the complete NWS
 properties and gains `radarCategory` and `radarColor`. For an alert without

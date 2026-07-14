@@ -170,9 +170,11 @@ func (s *Server) tile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selection := radar.Selection{Product: r.PathValue("product"), Station: r.PathValue("station"), Elevation: r.PathValue("elevation")}
-	result, err := s.radar.Tile(r.Context(), selection, z, x, y)
+	result, err := s.radar.Tile(r.Context(), selection, r.URL.Query().Get("timestamp"), z, x, y)
 	if err != nil {
-		if isSelectionError(err) || strings.Contains(err.Error(), "tile") || strings.Contains(err.Error(), "zoom") {
+		if errors.Is(err, radar.ErrInvalidGeneration) {
+			writeError(w, http.StatusBadRequest, "invalid_generation", err.Error())
+		} else if isSelectionError(err) || strings.Contains(err.Error(), "tile") || strings.Contains(err.Error(), "zoom") {
 			writeError(w, http.StatusBadRequest, "invalid_tile", err.Error())
 		} else {
 			writeError(w, http.StatusBadGateway, "upstream_unavailable", err.Error())

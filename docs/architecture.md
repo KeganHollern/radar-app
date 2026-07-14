@@ -141,6 +141,26 @@ are data-quality flags, not precipitation or velocity magnitudes, and must not
 be folded into the numeric color scale. As with reflectivity, no-data pixels
 are transparent.
 
+Station manifests identify one exact NOAA observation. Every reflectivity or
+velocity tile request must include that generation; the API validates it against
+the layer's advertised WMS time dimension and sends the exact `TIME` upstream.
+A previous listed scan is accepted only during a bounded 15-minute handoff so
+tiles requested at different zoom levels cannot silently cross a scan rollover.
+This is generation consistency for the live display, not historical access.
+Because API replicas have independent short metadata caches, a replica performs
+one timeout-bounded capabilities refresh when the requested station generation
+is newer than its cached default, then validates the fresh response normally.
+Older unlisted timestamps are rejected without another upstream request. This
+prevents a just-published manifest from producing intermittent blank tiles on
+another replica without creating an amplification path or relaxing generation
+checks.
+
+Radar rasters still have finite spatial resolution. A low map zoom necessarily
+undersamples small velocity features that become visible at higher zoom, even
+when both levels use the same scan. Nearest-neighbor client resampling avoids
+inventing blended velocity colors but cannot preserve details smaller than a
+requested WMS pixel.
+
 ### Weather alerts
 
 Use `https://api.weather.gov/alerts/active` and request GeoJSON with a unique,
@@ -168,6 +188,14 @@ are simplified at `0.0075°` before being combined into one MultiPolygon and
 marked `radarGeometrySource`; inline NWS warning polygons remain unchanged. The
 simplification keeps nationwide alert refreshes responsive on mobile devices.
 Individual zone failures leave partial or null geometry without hiding the alert.
+
+Alert visibility is a device-local presentation preference. All event types are
+visible by default; the Settings panel persists disabled NWS event names and
+uses the same filtered collection for polygons, the active count, the alert
+list, and map-tap resolution. Filtering never cancels or changes the underlying
+NWS product. When several visible polygons cover one tap point, query every
+rendered alert feature there and present a chooser before opening the existing
+detail sheet.
 
 The map should fill alert geometry with an explicit, accessible event/severity
 color policy and a strong outline. Color is presentation, not an NWS-defined
@@ -212,6 +240,8 @@ upstream URLs or accept an unrestricted WMS query string from clients.
 - Cache keys include product, station, elevation, tile coordinate, and immutable
   upstream generation. `latest` metadata should have a short cache lifetime;
   generation-addressed tiles may be cached much longer.
+- Require and validate the station generation on every station tile, and pin the
+  upstream WMS `TIME`; never resolve `latest` independently for each station tile.
 - Coalesce concurrent cache misses so hundreds of clients do not create hundreds
   of identical upstream WMS requests.
 - Surface `observedAt`, `receivedAt`, `ageSeconds`, and `stale` in manifests.

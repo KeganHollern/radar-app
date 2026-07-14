@@ -2,15 +2,23 @@ import 'dart:async';
 
 import '../config/app_config.dart';
 import '../models/radar_models.dart';
+import '../services/alert_visibility_store.dart';
 import '../services/radar_api.dart';
 
 typedef VoidCallback = void Function();
 
 final class RadarController {
-  RadarController({RadarApi? api})
-    : _api = api ?? RadarApi(baseUrl: AppConfig.apiBaseUrl);
+  RadarController({RadarApi? api, AlertVisibilityStore? alertVisibilityStore})
+    : _api = api ?? RadarApi(baseUrl: AppConfig.apiBaseUrl),
+      _alertVisibilityStore =
+          alertVisibilityStore ?? SharedPreferencesAlertVisibilityStore() {
+    for (final type in _defaultKnownAlertTypes) {
+      _knownAlertTypeLabels[_normalizeAlertType(type)] = type;
+    }
+  }
 
   final RadarApi _api;
+  final AlertVisibilityStore _alertVisibilityStore;
   final List<VoidCallback> _listeners = [];
   Timer? _radarTimer;
   Timer? _alertsTimer;
@@ -25,13 +33,17 @@ final class RadarController {
   int _updatesGeneration = 0;
   Map<String, dynamic> _stationGeoJson = _emptyFeatureCollection();
   Map<String, dynamic> _alertGeoJson = _emptyFeatureCollection();
+  List<WeatherAlert> _allAlerts = const [];
+  List<WeatherAlert> _visibleAlerts = const [];
+  final Set<String> _hiddenAlertTypes = {};
+  final Map<String, String> _knownAlertTypeLabels = {};
+  bool _alertVisibilityLoaded = false;
 
   RadarMode mode = RadarMode.aggregate;
   RadarStation? selectedStation;
   String? selectedElevation;
   RadarSnapshot? snapshot;
   List<RadarStation> stations = const [];
-  List<WeatherAlert> alerts = const [];
   String? radarError;
   String? alertsError;
   bool alertsStale = false;
@@ -44,6 +56,25 @@ final class RadarController {
   bool get isLoadingAlerts => _loadingAlerts;
   bool get isLoadingStations => _loadingStations;
   String get apiBaseUrl => _api.baseUrl;
+  List<WeatherAlert> get alerts => _visibleAlerts;
+  List<WeatherAlert> get allAlerts => _allAlerts;
+
+  List<String> get knownAlertTypes {
+    final types = _knownAlertTypeLabels.values.toList();
+    types.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return List.unmodifiable(types);
+  }
+
+  Map<String, int> get alertTypeCounts {
+    final counts = <String, int>{};
+    for (final alert in _allAlerts) {
+      final label =
+          _knownAlertTypeLabels[_normalizeAlertType(alert.event)] ??
+          alert.event;
+      counts[label] = (counts[label] ?? 0) + 1;
+    }
+    return Map.unmodifiable(counts);
+  }
 
   List<String> get elevations =>
       selectedStation?.elevationsFor(mode) ?? const [];
@@ -79,6 +110,7 @@ final class RadarController {
   void removeListener(VoidCallback listener) => _listeners.remove(listener);
 
   Future<void> initialize() async {
+    await loadAlertVisibility();
     _radarTimer = Timer.periodic(
       AppConfig.radarRefreshInterval,
       (_) => refreshRadar(),
@@ -140,16 +172,13 @@ final class RadarController {
     try {
       final fresh = await _api.fetchAlerts();
       if (_disposed) return;
-      alerts = fresh.alerts;
+      _allAlerts = List.unmodifiable(fresh.alerts);
       if (fresh.changed) {
-        _alertGeoJson = {
-          'type': 'FeatureCollection',
-          'features': fresh.alerts
-              .where((alert) => alert.hasMapGeometry)
-              .map((alert) => alert.toGeoJsonFeature())
-              .toList(growable: false),
-        };
-        alertRevision++;
+        final learnedTypes = _rememberAlertTypes(fresh.alerts);
+        _rebuildVisibleAlerts();
+        if (learnedTypes && _alertVisibilityLoaded) {
+          unawaited(_saveAlertVisibility());
+        }
       }
       alertsStale = fresh.stale;
       alertsUpdatedAt = DateTime.now();
@@ -241,10 +270,99 @@ final class RadarController {
   }
 
   WeatherAlert? alertById(String id) {
-    for (final alert in alerts) {
+    for (final alert in _visibleAlerts) {
       if (alert.id == id) return alert;
     }
     return null;
+  }
+
+  bool isAlertTypeVisible(String alertType) =>
+      !_hiddenAlertTypes.contains(_normalizeAlertType(alertType));
+
+  void setAlertTypeVisible(String alertType, bool visible) {
+    final normalized = _normalizeAlertType(alertType);
+    if (normalized.isEmpty) return;
+    _knownAlertTypeLabels.putIfAbsent(normalized, () => alertType);
+    final changed = visible
+        ? _hiddenAlertTypes.remove(normalized)
+        : _hiddenAlertTypes.add(normalized);
+    if (!changed) return;
+    _rebuildVisibleAlerts();
+    _notify();
+    unawaited(_saveAlertVisibility());
+  }
+
+  void showAllAlertTypes() {
+    if (_hiddenAlertTypes.isEmpty) return;
+    _hiddenAlertTypes.clear();
+    _rebuildVisibleAlerts();
+    _notify();
+    unawaited(_saveAlertVisibility());
+  }
+
+  Future<void> loadAlertVisibility() async {
+    if (_alertVisibilityLoaded) return;
+    try {
+      final saved = await _alertVisibilityStore.load();
+      if (_disposed) return;
+      _hiddenAlertTypes
+        ..clear()
+        ..addAll(saved.hiddenTypes.map(_normalizeAlertType));
+      for (final type in saved.knownTypes) {
+        final normalized = _normalizeAlertType(type);
+        if (normalized.isNotEmpty) {
+          _knownAlertTypeLabels.putIfAbsent(normalized, () => type);
+        }
+      }
+    } catch (_) {
+      // Preferences are an enhancement; default to showing every alert if the
+      // device store is unavailable or corrupt.
+      _hiddenAlertTypes.clear();
+    } finally {
+      _alertVisibilityLoaded = true;
+    }
+    if (_allAlerts.isNotEmpty) {
+      _rebuildVisibleAlerts();
+      _notify();
+    }
+  }
+
+  bool _rememberAlertTypes(Iterable<WeatherAlert> freshAlerts) {
+    var changed = false;
+    for (final alert in freshAlerts) {
+      final normalized = _normalizeAlertType(alert.event);
+      if (normalized.isEmpty) continue;
+      if (_knownAlertTypeLabels.containsKey(normalized)) continue;
+      _knownAlertTypeLabels[normalized] = alert.event;
+      changed = true;
+    }
+    return changed;
+  }
+
+  void _rebuildVisibleAlerts() {
+    _visibleAlerts = List.unmodifiable(
+      _allAlerts.where((alert) => isAlertTypeVisible(alert.event)),
+    );
+    _alertGeoJson = {
+      'type': 'FeatureCollection',
+      'features': _visibleAlerts
+          .where((alert) => alert.hasMapGeometry)
+          .map((alert) => alert.toGeoJsonFeature())
+          .toList(growable: false),
+    };
+    alertRevision++;
+  }
+
+  Future<void> _saveAlertVisibility() async {
+    if (!_alertVisibilityLoaded || _disposed) return;
+    try {
+      await _alertVisibilityStore.save(
+        hiddenTypes: Set.unmodifiable(_hiddenAlertTypes),
+        knownTypes: Set.unmodifiable(_knownAlertTypeLabels.values.toSet()),
+      );
+    } catch (_) {
+      // Keep the in-memory selection for this session if persistence fails.
+    }
   }
 
   RadarStation? _stationById(String id) {
@@ -342,3 +460,7 @@ Map<String, dynamic> _emptyFeatureCollection() => {
   'type': 'FeatureCollection',
   'features': <dynamic>[],
 };
+
+const _defaultKnownAlertTypes = <String>['Air Quality Alert'];
+
+String _normalizeAlertType(String value) => value.trim().toLowerCase();

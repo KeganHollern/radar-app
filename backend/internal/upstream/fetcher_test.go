@@ -43,6 +43,46 @@ func TestFetcherCachesAndValidates(t *testing.T) {
 	}
 }
 
+func TestFetcherRefreshBypassesFreshCache(t *testing.T) {
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		if call == 2 && r.Header.Get("Cache-Control") != "no-cache" {
+			t.Errorf("refresh cache control = %q", r.Header.Get("Cache-Control"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": {"application/xml"}},
+			Body:       io.NopCloser(strings.NewReader("version-" + string(rune('0'+call)))),
+			Request:    r,
+		}, nil
+	})}
+	fetcher := NewFetcher(client, cache.New(10, 1024), "radar-test", 1024, time.Minute)
+
+	first, err := fetcher.Get(context.Background(), "capabilities", "https://example.test/capabilities", "application/xml", time.Minute, "application/xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first.Value.Body) != "version-1" {
+		t.Fatalf("first body = %q", first.Value.Body)
+	}
+	refreshed, err := fetcher.Refresh(context.Background(), "capabilities", "https://example.test/capabilities", "application/xml", time.Minute, "application/xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(refreshed.Value.Body) != "version-2" || calls.Load() != 2 {
+		t.Fatalf("refresh body = %q, calls = %d", refreshed.Value.Body, calls.Load())
+	}
+	cached, err := fetcher.Get(context.Background(), "capabilities", "https://example.test/capabilities", "application/xml", time.Minute, "application/xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cached.Value.Body) != "version-2" || calls.Load() != 2 {
+		t.Fatalf("cached body = %q, calls = %d", cached.Value.Body, calls.Load())
+	}
+}
+
 func TestFetcherServesStaleOnInvalidUpstreamResponse(t *testing.T) {
 	now := time.Now().UTC()
 	responseCache := cache.New(10, 1024)
