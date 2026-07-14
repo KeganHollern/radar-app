@@ -86,6 +86,65 @@ void main() {
     api.close();
   });
 
+  test(
+    'aggregate latest and updates encode the detail station query',
+    () async {
+      final requestedUris = <Uri>[];
+      final api = RadarApi(
+        baseUrl: 'https://radar.lystic.dev',
+        client: MockClient((request) async {
+          requestedUris.add(request.url);
+          if (request.url.path == '/api/v1/updates') {
+            return http.Response(
+              'retry: 5000\n\n',
+              200,
+              headers: {'Content-Type': 'text/event-stream'},
+            );
+          }
+          return http.Response(
+            '{"observedAt":"2026-07-14T14:32:03Z","version":"scan"}',
+            200,
+          );
+        }),
+      );
+      final detailStation = _testStation('K A/&?');
+
+      await api.fetchLatest(mode: RadarMode.aggregate, station: detailStation);
+      await api
+          .watchUpdates(mode: RadarMode.aggregate, station: detailStation)
+          .drain<void>();
+
+      expect(requestedUris, hasLength(2));
+      for (final uri in requestedUris) {
+        expect(uri.queryParameters['product'], 'aggregate');
+        expect(uri.queryParameters['station'], detailStation.id);
+        expect(uri.query, contains('station=K+A%2F%26%3F'));
+      }
+      api.close();
+    },
+  );
+
+  test('aggregate tile template retains its detail station', () {
+    final api = RadarApi(baseUrl: 'https://radar.lystic.dev');
+    final snapshot = RadarSnapshot(
+      observedAt: DateTime.utc(2026, 7, 14),
+      version: 'scan',
+      tileTemplate:
+          '/api/v1/radar/tiles/aggregate/{station}/0.5/'
+          '{z}/{x}/{y}.png?timestamp=scan',
+    );
+
+    final template = api.tileTemplate(
+      mode: RadarMode.aggregate,
+      snapshot: snapshot,
+      station: _testStation('KMAF'),
+    );
+
+    expect(template, contains('/aggregate/KMAF/0.5/'));
+    expect(template, isNot(contains('/aggregate/_/')));
+    api.close();
+  });
+
   test('backend error envelopes expose their readable message', () async {
     final api = RadarApi(
       baseUrl: 'https://radar.lystic.dev',
@@ -281,3 +340,14 @@ const _stationCollection = '''
   ]
 }
 ''';
+
+RadarStation _testStation(String id) => RadarStation(
+  id: id,
+  name: id,
+  latitude: 31.94,
+  longitude: -102.19,
+  reflectivityElevations: const ['0.5'],
+  velocityElevations: const ['0.5'],
+  supportsReflectivity: true,
+  supportsVelocity: true,
+);

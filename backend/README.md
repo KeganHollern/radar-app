@@ -22,26 +22,31 @@ to `https://radar.lystic.dev`.
 - `GET /api/v1/stations` — normalized WSR-88D station GeoJSON
 - `GET /api/v1/alerts[?point=lat,lon|area=TX|region=AL]` — active NWS alert GeoJSON
 - `GET /api/v1/radar/latest?product=aggregate` — current observation manifest
+- `GET /api/v1/radar/latest?product=aggregate&station=KEWX` — the same regional mosaic with one viewport-pinned high-detail radar
 - `GET /api/v1/radar/latest?product=reflectivity&station=KFWS&elevation=0.5`
 - `GET /api/v1/radar/tiles/{product}/{station}/{elevation}/{z}/{x}/{y}.png?timestamp={version}[&snapshot={signed-aggregate}]`
 - `GET /api/v1/updates` — SSE refresh events; accepts the same selection query as `latest`
 
-For aggregate tiles use `aggregate/conus/0.5`; the service normalizes the station
-and elevation placeholders. Aggregate tiles combine current CONUS, Alaska,
-Hawaii, Caribbean/Puerto Rico, and Guam RIDGE II layers. The aggregate manifest
-includes per-region timestamps, uses the oldest available component for its
-overall age, and derives its generation from every regional timestamp.
+For the seamless regional-only aggregate use `aggregate/conus/0.5`. A supported
+four-character WSR-88D station can replace `conus` to add high-resolution detail
+from that one radar without changing sources at tile boundaries. Aggregate tiles
+combine current CONUS, Alaska, Hawaii, Caribbean/Puerto Rico, and Guam RIDGE II
+layers. The aggregate manifest includes per-region timestamps, uses the oldest
+available component for its overall age, and derives its generation from every
+regional timestamp plus the optional detail station and scan.
 
 The aggregate `timestamp` is required. Its tile template also carries a compact,
-HMAC-signed `snapshot` containing the five ordered regional observation times
-and missing-region mask. Any replica sharing `RADAR_AGGREGATE_TOKEN_KEY` can
-reconstruct the exact generation without relying on pod-local history or doing
-a metadata request per tile. The existing 24-character timestamp remains in the
-URL and is cryptographically bound to the snapshot for rolling-deployment and
-old-client compatibility. Malformed, tampered, and future snapshots are rejected
-before upstream work. An expired snapshot remains valid only when an exact
-current or recently remembered component set confirms a prolonged unchanged
-generation; otherwise it is rejected after rollover.
+HMAC-signed `snapshot`. Schema 1 contains the five ordered regional observation
+times and missing-region mask. Schema 2 additionally contains the chosen detail
+station, its exact scan, and canonical site coordinates. Any replica sharing
+`RADAR_AGGREGATE_TOKEN_KEY` can reconstruct the exact generation without relying
+on pod-local history or doing a metadata request per tile. The existing
+24-character timestamp remains in the URL and is cryptographically bound to the
+snapshot for rolling-deployment and old-client compatibility. Malformed,
+tampered, future, and station/path-mismatched snapshots are rejected before
+upstream work. An expired snapshot remains valid only when an exact current or
+recently remembered component set confirms a prolonged unchanged generation;
+otherwise it is rejected after rollover.
 
 Each regional WMS request is pinned to the exact observation encoded by that
 generation. Zoom 7 and above selects the tile's local US radar region; national
@@ -49,12 +54,15 @@ zooms 0-6 fetch and composite all available regions at their individual
 observation times. Unknown generations are rejected instead of serving current
 data under an old URL.
 
-At zoom 9 and above, the aggregate view optionally overlays the nearest
-covering station's 0.5-degree super-resolution reflectivity scan. The station
-scan is pinned at or immediately before the same regional observation, weak
+At zoom 9 and above, an aggregate request with an explicit station overlays that
+station's 0.5-degree super-resolution reflectivity scan across its coverage.
+The client chooses one station for the whole viewport, so neighboring tiles do
+not switch radar or scan at an arbitrary grid edge. The station scan is resolved
+once per manifest at or immediately before the same regional observation, weak
 signals below 15 dBZ are removed, and scans more than 10 minutes behind are not
-used. Station enrichment has a two-second budget and falls back to the current
-regional mosaic on timeout, malformed data, stale data, or station outage.
+used. Tiles use the normal bounded upstream timeout and fall back to the exact
+regional mosaic on timeout, malformed data, or station outage. Requests using
+`conus` never perform station metadata or tile work.
 
 For station reflectivity and velocity, `timestamp` is the observation generation
 returned by `latest` and is required. The backend verifies that the scan is in

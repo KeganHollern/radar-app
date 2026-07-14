@@ -77,7 +77,7 @@ final class RadarApi {
     String? elevation,
   }) async {
     final query = <String, String>{'product': mode.apiValue};
-    if (mode.requiresStation && station != null) query['station'] = station.id;
+    if (station != null) query['station'] = station.id;
     if (elevation != null && elevation.isNotEmpty) {
       query['elevation'] = elevation;
     }
@@ -95,7 +95,7 @@ final class RadarApi {
     String? elevation,
   }) async* {
     final query = <String, String>{'product': mode.apiValue};
-    if (mode.requiresStation && station != null) query['station'] = station.id;
+    if (station != null) query['station'] = station.id;
     if (elevation != null && elevation.isNotEmpty) {
       query['elevation'] = elevation;
     }
@@ -159,7 +159,7 @@ final class RadarApi {
     RadarStation? station,
     String? elevation,
   }) {
-    final effectiveStation = mode.requiresStation ? station : null;
+    final effectiveStation = station;
     final effectiveElevation = mode.requiresStation ? elevation : null;
     var template = snapshot.tileTemplate;
     if (template == null || template.isEmpty) {

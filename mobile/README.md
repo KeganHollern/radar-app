@@ -56,6 +56,10 @@ App Transport Security exception. Production should remain HTTPS.
   control with the user.
 - Test follow mode on a physical device or with a simulated route. It uses the
   native location engine and retains the current map zoom while tracking.
+- Nearby chooses one high-detail radar for the whole viewport. Camera-idle
+  updates drive the choice while browsing; accepted device locations own it in
+  follow mode. A handoff margin prevents GPS jitter from repeatedly rebuilding
+  the radar source, and regional radar remains visible during a detail outage.
 - The wakelock is enabled while the app is in the foreground and released when
   it is backgrounded.
 - Radar metadata uses server-sent events for prompt updates, with 15-second

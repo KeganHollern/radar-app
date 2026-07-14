@@ -10,6 +10,7 @@ import (
 	"image/draw"
 	"image/png"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,19 +32,10 @@ const (
 	// overview remains intact and generation-pinned.
 	aggregateRegionalBaseMinZoom = 7
 
-	// Select one station for every zoom-7 parent tile. Children of the same
-	// parent therefore use the same radar and exact scan, which avoids a visible
-	// source seam when adjacent high-zoom tiles are requested independently.
-	aggregateDetailSelectionZoom = 7
-
 	// NOAA advertises each station SR_BREF coverage as a square extending almost
 	// exactly five degrees from its site. Keep a small tolerance for rounded WFS
 	// station coordinates and WMS coverage bounds.
 	stationCoverageRadiusDegrees = 5.05
-
-	// Station detail is optional enrichment. A slow station endpoint must not
-	// hold an otherwise ready regional tile for the full upstream timeout.
-	aggregateDetailTimeout = 2 * time.Second
 
 	// A station volume scan normally updates within several minutes. Never lay
 	// a much older station image over the current regional mosaic: this app is a
@@ -53,15 +45,10 @@ const (
 )
 
 type aggregateDetailStation struct {
-	id       string
-	region   string
-	distance float64
-}
-
-type aggregateStationDetail struct {
-	station    aggregateDetailStation
-	observedAt time.Time
-	result     upstream.Result
+	id        string
+	region    string
+	latitude  float64
+	longitude float64
 }
 
 type radarStationCatalog struct {
@@ -77,81 +64,55 @@ type radarStationCatalog struct {
 }
 
 func (s *Service) aggregateTile(ctx context.Context, _ Selection, latest Latest, z, x, y int) (upstream.Result, error) {
-	if z < aggregateDetailMinZoom {
+	if z < aggregateDetailMinZoom || latest.Detail == nil {
+		return s.fetchAggregateBaseTile(ctx, latest, z, x, y)
+	}
+	detail := *latest.Detail
+	if !aggregateDetailIntersectsTile(detail, z, x, y) {
 		return s.fetchAggregateBaseTile(ctx, latest, z, x, y)
 	}
 
-	baseRegion := aggregateRegionNameForTile(z, x, y)
-	component, ok := latest.Components[baseRegion]
-	if !ok || component.ObservedAt.IsZero() {
-		return upstream.Result{}, fmt.Errorf("aggregate region %q has no observation", baseRegion)
-	}
-	region, ok := aggregateRegionNamed(baseRegion)
-	if !ok {
-		return upstream.Result{}, fmt.Errorf("aggregate region %q is unsupported", baseRegion)
-	}
-	baseObservedAt := component.ObservedAt
-	endpoint := s.config.RadarBaseURL + "/" + region.workspace + "/ows"
-	query := pinnedWMSQuery(region.layer, tileBounds(z, x, y), baseObservedAt)
-	target := endpoint + "?" + query.Encode()
-	key := aggregateRegionalTileKey(baseRegion, baseObservedAt, z, x, y)
-
-	type baseResponse struct {
+	type tileResponse struct {
 		result upstream.Result
 		err    error
 	}
-	baseReady := make(chan baseResponse, 1)
+	fetchCtx, cancelFetch := context.WithCancel(ctx)
+	defer cancelFetch()
+	baseReady := make(chan tileResponse, 1)
 	go func() {
-		result, err := s.fetcher.Get(ctx, key, target, "image/png", s.config.TileTTL, "image/png")
-		baseReady <- baseResponse{result: result, err: err}
+		result, err := s.fetchAggregateBaseTile(fetchCtx, latest, z, x, y)
+		baseReady <- tileResponse{result: result, err: err}
 	}()
-
-	detailCtx, cancelDetail := context.WithTimeout(ctx, s.aggregateDetailTimeout)
-	defer cancelDetail()
-	type detailResponse struct {
-		detail aggregateStationDetail
-		err    error
-	}
-	detailReady := make(chan detailResponse, 1)
+	detailReady := make(chan tileResponse, 1)
 	go func() {
-		detail, err := s.fetchAggregateStationDetail(detailCtx, latest, z, x, y)
-		detailReady <- detailResponse{detail: detail, err: err}
+		selection := Selection{Product: "reflectivity", Station: detail.Station, Elevation: "0.5"}
+		endpoint, layer := s.stationEndpointLayer(selection)
+		query := pinnedWMSQuery(layer, tileBounds(z, x, y), detail.ObservedAt)
+		target := endpoint + "?" + query.Encode()
+		key := fmt.Sprintf(
+			"tile:aggregate-station:%s:%d:%d:%d:%d",
+			detail.Station,
+			detail.ObservedAt.UnixNano(),
+			z,
+			x,
+			y,
+		)
+		result, err := s.fetcher.Get(fetchCtx, key, target, "image/png", s.config.TileTTL, "image/png")
+		detailReady <- tileResponse{result: result, err: err}
 	}()
 
 	base := <-baseReady
 	if base.err != nil {
 		return upstream.Result{}, base.err
 	}
-
-	// Prefer a detail result that finished while the base tile was loading, even
-	// if its short context deadline expired just before the base completed.
-	var detail detailResponse
-	select {
-	case detail = <-detailReady:
-	default:
-		select {
-		case detail = <-detailReady:
-		case <-detailCtx.Done():
-			return base.result, nil
-		}
-	}
-	if detail.err != nil {
+	station := <-detailReady
+	if station.err != nil {
 		return base.result, nil
 	}
 
-	generation := detail.detail.observedAt.UnixMilli()
-	compositeKey := fmt.Sprintf(
-		"tile:aggregate-composite:%s:%d:%s:%d:%d:%d:%d",
-		baseRegion,
-		baseObservedAt.UnixMilli(),
-		detail.detail.station.id,
-		generation,
-		z,
-		x,
-		y,
-	)
+	compositeKey := fmt.Sprintf("tile:aggregate-composite:%s:%d:%d:%d", latest.Version, z, x, y)
 	result, err := s.fetcher.Derive(ctx, compositeKey, s.config.TileTTL, "image/png", func(context.Context) (upstream.Result, error) {
-		filtered, err := filterStationReflectivityTile("reflectivity", detail.detail.result.Value.Body)
+		filtered, err := filterStationReflectivityTile("reflectivity", station.result.Value.Body)
 		if err != nil {
 			return upstream.Result{}, err
 		}
@@ -163,12 +124,10 @@ func (s *Service) aggregateTile(ctx context.Context, _ Selection, latest Latest,
 		result.Value.Body = composited
 		result.Value.ETag = ""
 		result.Value.LastModified = ""
-		result.State = combinedCacheState(base.result.State, detail.detail.result.State)
+		result.State = combinedCacheState(base.result.State, station.result.State)
 		return result, nil
 	})
 	if err != nil {
-		// High-resolution detail is optional. An invalid or temporarily malformed
-		// station image must not make the valid regional mosaic unavailable.
 		return base.result, nil
 	}
 	return result, nil
@@ -196,7 +155,7 @@ func (s *Service) fetchAggregateBaseTile(ctx context.Context, latest Latest, z, 
 }
 
 func (s *Service) fetchNationalAggregateTile(ctx context.Context, latest Latest, z, x, y int) (upstream.Result, error) {
-	key := fmt.Sprintf("tile:aggregate-national:%s:%d:%d:%d", latest.Version, z, x, y)
+	key := fmt.Sprintf("tile:aggregate-national:%s:%d:%d:%d", aggregateRegionalVersion(latest), z, x, y)
 	return s.fetcher.Derive(ctx, key, s.config.TileTTL, "image/png", func(buildCtx context.Context) (upstream.Result, error) {
 		type regionResponse struct {
 			index  int
@@ -257,6 +216,21 @@ func (s *Service) fetchNationalAggregateTile(ctx context.Context, latest Latest,
 	})
 }
 
+func aggregateRegionalVersion(latest Latest) string {
+	observations := make(map[string]time.Time, len(latest.Components))
+	missing := make([]string, 0, len(aggregateRegions))
+	for _, region := range aggregateRegions {
+		component, ok := latest.Components[region.name]
+		if !ok || component.ObservedAt.IsZero() {
+			missing = append(missing, region.name)
+			continue
+		}
+		observations[region.name] = component.ObservedAt
+	}
+	sort.Strings(missing)
+	return aggregateVersion(observations, missing)
+}
+
 func aggregateRegionalTileKey(regionName string, observedAt time.Time, z, x, y int) string {
 	return fmt.Sprintf(
 		"tile:aggregate-base:%s:%d:%d:%d:%d",
@@ -268,12 +242,7 @@ func aggregateRegionalTileKey(regionName string, observedAt time.Time, z, x, y i
 	)
 }
 
-func (s *Service) fetchAggregateStationDetail(ctx context.Context, latest Latest, z, x, y int) (aggregateStationDetail, error) {
-	regionName := aggregateRegionNameForTile(z, x, y)
-	component, ok := latest.Components[regionName]
-	if !ok || component.ObservedAt.IsZero() {
-		return aggregateStationDetail{}, fmt.Errorf("aggregate region %q has no observation", regionName)
-	}
+func (s *Service) resolveAggregateDetail(ctx context.Context, stationID string, components map[string]LatestComponent) (AggregateDetail, error) {
 	catalog, err := s.fetcher.Get(
 		ctx,
 		"stations",
@@ -284,28 +253,29 @@ func (s *Service) fetchAggregateStationDetail(ctx context.Context, latest Latest
 		"application/json",
 	)
 	if err != nil {
-		return aggregateStationDetail{}, err
+		return AggregateDetail{}, err
 	}
-	station, err := nearestAggregateDetailStation(catalog.Value.Body, z, x, y)
+	station, err := aggregateDetailStationNamed(catalog.Value.Body, stationID)
 	if err != nil {
-		return aggregateStationDetail{}, err
+		return AggregateDetail{}, err
 	}
-	if station.region != regionName {
-		return aggregateStationDetail{}, fmt.Errorf("station %s is outside aggregate region %q", station.id, regionName)
+	component, ok := components[station.region]
+	if !ok || component.ObservedAt.IsZero() {
+		return AggregateDetail{}, fmt.Errorf("station %s aggregate region %q has no observation", station.id, station.region)
 	}
 
 	selection := Selection{Product: "reflectivity", Station: station.id, Elevation: "0.5"}
 	endpoint, layer := s.stationEndpointLayer(selection)
 	latestStation, capabilities, err := s.fetchLatestLayer(ctx, endpoint, layer)
 	if err != nil {
-		return aggregateStationDetail{}, err
+		return AggregateDetail{}, err
 	}
 	// A replica can have station capabilities cached from before the regional
 	// anchor arrived. Refresh once before choosing an exact scan at/before it.
 	if latestStation.Before(component.ObservedAt) {
 		latestStation, capabilities, err = s.refreshLatestLayer(ctx, endpoint, layer)
 		if err != nil {
-			return aggregateStationDetail{}, err
+			return AggregateDetail{}, err
 		}
 	}
 	maxLag := aggregateDetailMaxLag
@@ -313,35 +283,72 @@ func (s *Service) fetchAggregateStationDetail(ctx context.Context, latest Latest
 		maxLag = s.config.RadarStaleAfter
 	}
 	if latestStation.Before(component.ObservedAt) && component.ObservedAt.Sub(latestStation) > maxLag {
-		return aggregateStationDetail{}, fmt.Errorf("station %s latest scan is %s behind aggregate", station.id, component.ObservedAt.Sub(latestStation).Round(time.Second))
+		return AggregateDetail{}, fmt.Errorf("station %s latest scan is %s behind aggregate", station.id, component.ObservedAt.Sub(latestStation).Round(time.Second))
 	}
 	observations, err := layerObservationTimes(capabilities.Value.Body, layer)
 	if err != nil {
-		return aggregateStationDetail{}, err
+		return AggregateDetail{}, err
 	}
 	observedAt, ok := observationAtOrBefore(observations, component.ObservedAt)
 	if !ok {
-		return aggregateStationDetail{}, errors.New("station has no scan at or before the regional observation")
+		return AggregateDetail{}, errors.New("station has no scan at or before the regional observation")
 	}
 	if component.ObservedAt.Sub(observedAt) > maxLag {
-		return aggregateStationDetail{}, fmt.Errorf("station %s matching scan is %s behind aggregate", station.id, component.ObservedAt.Sub(observedAt).Round(time.Second))
+		return AggregateDetail{}, fmt.Errorf("station %s matching scan is %s behind aggregate", station.id, component.ObservedAt.Sub(observedAt).Round(time.Second))
 	}
+	return AggregateDetail{
+		Station:    station.id,
+		ObservedAt: observedAt,
+		Latitude:   math.Round(station.latitude*aggregateCoordinateScale) / aggregateCoordinateScale,
+		Longitude:  math.Round(station.longitude*aggregateCoordinateScale) / aggregateCoordinateScale,
+	}, nil
+}
 
-	query := pinnedWMSQuery(layer, tileBounds(z, x, y), observedAt)
-	target := endpoint + "?" + query.Encode()
-	key := fmt.Sprintf(
-		"tile:aggregate-station:%s:%d:%d:%d:%d",
-		station.id,
-		observedAt.UnixMilli(),
-		z,
-		x,
-		y,
-	)
-	result, err := s.fetcher.Get(ctx, key, target, "image/png", s.config.TileTTL, "image/png")
-	if err != nil {
-		return aggregateStationDetail{}, err
+func aggregateDetailStationNamed(body []byte, stationID string) (aggregateDetailStation, error) {
+	var catalog radarStationCatalog
+	if err := json.Unmarshal(body, &catalog); err != nil {
+		return aggregateDetailStation{}, fmt.Errorf("decode radar stations: %w", err)
 	}
-	return aggregateStationDetail{station: station, observedAt: observedAt, result: result}, nil
+	for _, feature := range catalog.Features {
+		id := strings.ToUpper(strings.TrimSpace(feature.Properties.ID))
+		if id != stationID || !supportedAggregateDetailStation(id) || feature.Geometry.Type != "Point" || len(feature.Geometry.Coordinates) < 2 {
+			continue
+		}
+		longitude := feature.Geometry.Coordinates[0]
+		latitude := feature.Geometry.Coordinates[1]
+		if !validRadarCoordinate(latitude, longitude) {
+			continue
+		}
+		return aggregateDetailStation{
+			id:        id,
+			region:    aggregateRegionForLocation(latitude, longitude),
+			latitude:  latitude,
+			longitude: longitude,
+		}, nil
+	}
+	return aggregateDetailStation{}, fmt.Errorf("aggregate detail station %s is unavailable", stationID)
+}
+
+func validRadarCoordinate(latitude, longitude float64) bool {
+	return !math.IsNaN(latitude) && !math.IsInf(latitude, 0) &&
+		!math.IsNaN(longitude) && !math.IsInf(longitude, 0) &&
+		latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180
+}
+
+func aggregateDetailIntersectsTile(detail AggregateDetail, z, x, y int) bool {
+	bounds := geographicTileBounds(z, x, y)
+	if bounds.maxY < detail.Latitude-stationCoverageRadiusDegrees ||
+		bounds.minY > detail.Latitude+stationCoverageRadiusDegrees {
+		return false
+	}
+	for _, shift := range []float64{-360, 0, 360} {
+		longitude := detail.Longitude + shift
+		if bounds.maxX >= longitude-stationCoverageRadiusDegrees &&
+			bounds.minX <= longitude+stationCoverageRadiusDegrees {
+			return true
+		}
+	}
+	return false
 }
 
 func observationAtOrBefore(observations []time.Time, anchor time.Time) (time.Time, bool) {
@@ -351,67 +358,6 @@ func observationAtOrBefore(observations []time.Time, anchor time.Time) (time.Tim
 		}
 	}
 	return time.Time{}, false
-}
-
-func nearestAggregateDetailStation(body []byte, z, x, y int) (aggregateDetailStation, error) {
-	var catalog radarStationCatalog
-	if err := json.Unmarshal(body, &catalog); err != nil {
-		return aggregateDetailStation{}, fmt.Errorf("decode radar stations: %w", err)
-	}
-
-	selectionZ, selectionX, selectionY := aggregateDetailSelectionTile(z, x, y)
-	selectionBounds := geographicTileBounds(selectionZ, selectionX, selectionY)
-	centerLatitude := (selectionBounds.minY + selectionBounds.maxY) / 2
-	centerLongitude := (selectionBounds.minX + selectionBounds.maxX) / 2
-	longitudeScale := math.Cos(centerLatitude * math.Pi / 180)
-	var nearest aggregateDetailStation
-	found := false
-	seen := make(map[string]bool)
-	for _, feature := range catalog.Features {
-		id := strings.ToUpper(strings.TrimSpace(feature.Properties.ID))
-		if seen[id] || !supportedAggregateDetailStation(id) || feature.Geometry.Type != "Point" || len(feature.Geometry.Coordinates) < 2 {
-			continue
-		}
-		longitude := feature.Geometry.Coordinates[0]
-		latitude := feature.Geometry.Coordinates[1]
-		if math.IsNaN(latitude) || math.IsInf(latitude, 0) || math.IsNaN(longitude) || math.IsInf(longitude, 0) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
-			continue
-		}
-		seen[id] = true
-		// Require the radar footprint to cover the whole selection tile. This
-		// makes station choice stable for all descendant tiles, rather than
-		// switching sources at an arbitrary child-tile edge.
-		if longitude-stationCoverageRadiusDegrees > selectionBounds.minX ||
-			longitude+stationCoverageRadiusDegrees < selectionBounds.maxX ||
-			latitude-stationCoverageRadiusDegrees > selectionBounds.minY ||
-			latitude+stationCoverageRadiusDegrees < selectionBounds.maxY {
-			continue
-		}
-		dx := (longitude - centerLongitude) * longitudeScale
-		dy := latitude - centerLatitude
-		distance := dx*dx + dy*dy
-		candidate := aggregateDetailStation{
-			id:       id,
-			region:   aggregateRegionForLocation(latitude, longitude),
-			distance: distance,
-		}
-		if !found || candidate.distance < nearest.distance || (candidate.distance == nearest.distance && candidate.id < nearest.id) {
-			nearest = candidate
-			found = true
-		}
-	}
-	if !found {
-		return aggregateDetailStation{}, errors.New("no station coverage intersects tile")
-	}
-	return nearest, nil
-}
-
-func aggregateDetailSelectionTile(z, x, y int) (int, int, int) {
-	if z <= aggregateDetailSelectionZoom {
-		return z, x, y
-	}
-	shift := z - aggregateDetailSelectionZoom
-	return aggregateDetailSelectionZoom, x >> shift, y >> shift
 }
 
 func aggregateRegionForLocation(latitude, longitude float64) string {

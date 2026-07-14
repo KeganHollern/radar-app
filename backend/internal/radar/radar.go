@@ -48,6 +48,14 @@ type Latest struct {
 	Source          string                     `json:"source"`
 	Components      map[string]LatestComponent `json:"components,omitempty"`
 	MissingRegions  []string                   `json:"missingRegions,omitempty"`
+	Detail          *AggregateDetail           `json:"detail,omitempty"`
+}
+
+type AggregateDetail struct {
+	Station    string    `json:"station"`
+	ObservedAt time.Time `json:"observedAt"`
+	Latitude   float64   `json:"latitude"`
+	Longitude  float64   `json:"longitude"`
 }
 
 type LatestComponent struct {
@@ -72,11 +80,10 @@ var aggregateRegions = []aggregateRegion{
 }
 
 type Service struct {
-	config                 config.Config
-	fetcher                *upstream.Fetcher
-	aggregateDetailTimeout time.Duration
-	aggregateVersionsMu    sync.Mutex
-	aggregateVersions      map[string]rememberedAggregateGeneration
+	config              config.Config
+	fetcher             *upstream.Fetcher
+	aggregateVersionsMu sync.Mutex
+	aggregateVersions   map[string]rememberedAggregateGeneration
 }
 
 type rememberedAggregateGeneration struct {
@@ -86,10 +93,9 @@ type rememberedAggregateGeneration struct {
 
 func NewService(c config.Config, fetcher *upstream.Fetcher) *Service {
 	return &Service{
-		config:                 c,
-		fetcher:                fetcher,
-		aggregateDetailTimeout: aggregateDetailTimeout,
-		aggregateVersions:      make(map[string]rememberedAggregateGeneration),
+		config:            c,
+		fetcher:           fetcher,
+		aggregateVersions: make(map[string]rememberedAggregateGeneration),
 	}
 }
 
@@ -103,7 +109,14 @@ func (s *Service) Normalize(selection Selection) (Selection, error) {
 
 	switch selection.Product {
 	case "aggregate":
-		selection.Station = "conus"
+		switch selection.Station {
+		case "", "_", "CONUS":
+			selection.Station = "conus"
+		default:
+			if !validStation(selection.Station) || !supportedAggregateDetailStation(selection.Station) {
+				return Selection{}, errors.New("aggregate detail station must be a supported four-character radar site identifier")
+			}
+		}
 		selection.Elevation = "0.5"
 		return selection, nil
 	case "reflectivity", "velocity":
@@ -140,6 +153,9 @@ func (s *Service) Tile(ctx context.Context, selection Selection, generation, agg
 			if err != nil {
 				return upstream.Result{}, fmt.Errorf("%w: %v", ErrInvalidGeneration, err)
 			}
+			if !aggregateSelectionMatches(selection, decoded.latest) {
+				return upstream.Result{}, fmt.Errorf("%w: aggregate snapshot does not match the requested station", ErrInvalidGeneration)
+			}
 			if !decoded.expired {
 				return s.aggregateTile(ctx, selection, decoded.latest, z, x, y)
 			}
@@ -166,7 +182,7 @@ func (s *Service) Tile(ctx context.Context, selection Selection, generation, agg
 		// recently observed manifests across a rollover so parallel requests split
 		// between replicas still render the exact generation in their tile URL.
 		resolved, ok := s.resolveAggregateGeneration(generation, latest)
-		if !ok {
+		if !ok || !aggregateSelectionMatches(selection, resolved) {
 			return upstream.Result{}, fmt.Errorf("%w: aggregate generation is unavailable; refresh latest radar metadata", ErrInvalidGeneration)
 		}
 		return s.aggregateTile(ctx, selection, resolved, z, x, y)
@@ -400,6 +416,16 @@ func (s *Service) aggregateLatest(ctx context.Context, selection Selection) (Lat
 	manifest.Stale = manifest.Stale || stale
 	manifest.Components = components
 	manifest.MissingRegions = missing
+	if selection.Station != "conus" {
+		detail, err := s.resolveAggregateDetail(ctx, selection.Station, components)
+		if err != nil {
+			return Latest{}, fmt.Errorf("resolve aggregate detail: %w", err)
+		}
+		manifest.Detail = &detail
+		manifest.Version = aggregateVersionWithDetail(observations, missing, detail)
+		manifest.TileTemplate = fmt.Sprintf("%s/api/v1/radar/tiles/%s/%s/%s/{z}/{x}/{y}.png?timestamp=%s",
+			s.config.PublicBaseURL, selection.Product, selection.Station, selection.Elevation, manifest.Version)
+	}
 	snapshot, err := encodeAggregateSnapshot(manifest, s.config.AggregateTokenKey)
 	if err != nil {
 		return Latest{}, fmt.Errorf("encode aggregate generation: %w", err)
@@ -455,10 +481,22 @@ func cloneLatest(latest Latest) Latest {
 		latest.Components = components
 	}
 	latest.MissingRegions = append([]string(nil), latest.MissingRegions...)
+	if latest.Detail != nil {
+		detail := *latest.Detail
+		latest.Detail = &detail
+	}
 	return latest
 }
 
 func aggregateVersion(observations map[string]time.Time, missing []string) string {
+	return aggregateVersionDigest(observations, missing, nil)
+}
+
+func aggregateVersionWithDetail(observations map[string]time.Time, missing []string, detail AggregateDetail) string {
+	return aggregateVersionDigest(observations, missing, &detail)
+}
+
+func aggregateVersionDigest(observations map[string]time.Time, missing []string, detail *AggregateDetail) string {
 	names := make([]string, 0, len(observations))
 	for name := range observations {
 		names = append(names, name)
@@ -471,7 +509,19 @@ func aggregateVersion(observations map[string]time.Time, missing []string) strin
 	for _, name := range missing {
 		_, _ = fmt.Fprintf(hash, "%s=missing;", name)
 	}
+	if detail != nil {
+		latitude := int64(math.Round(detail.Latitude * aggregateCoordinateScale))
+		longitude := int64(math.Round(detail.Longitude * aggregateCoordinateScale))
+		_, _ = fmt.Fprintf(hash, "detail=%s@%d,%d,%d;", detail.Station, detail.ObservedAt.UnixNano(), latitude, longitude)
+	}
 	return hex.EncodeToString(hash.Sum(nil)[:12])
+}
+
+func aggregateSelectionMatches(selection Selection, latest Latest) bool {
+	if selection.Station == "conus" {
+		return latest.Station == "conus" && latest.Detail == nil
+	}
+	return latest.Station == selection.Station && latest.Detail != nil && latest.Detail.Station == selection.Station
 }
 
 func (s *Service) Elevations(product string) []string {

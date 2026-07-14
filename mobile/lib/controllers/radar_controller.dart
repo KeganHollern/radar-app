@@ -4,6 +4,7 @@ import '../config/app_config.dart';
 import '../models/radar_models.dart';
 import '../services/alert_visibility_store.dart';
 import '../services/radar_api.dart';
+import 'nearby_station_selection.dart';
 
 typedef VoidCallback = void Function();
 
@@ -38,9 +39,13 @@ final class RadarController {
   final Set<String> _hiddenAlertTypes = {};
   final Map<String, String> _knownAlertTypeLabels = {};
   bool _alertVisibilityLoaded = false;
+  double? _nearbyCenterLatitude;
+  double? _nearbyCenterLongitude;
+  RadarStation? _snapshotStation;
 
   RadarMode mode = RadarMode.aggregate;
   RadarStation? selectedStation;
+  RadarStation? nearbyDetailStation;
   String? selectedElevation;
   RadarSnapshot? snapshot;
   List<RadarStation> stations = const [];
@@ -86,7 +91,7 @@ final class RadarController {
     return _api.tileTemplate(
       mode: mode,
       snapshot: current,
-      station: selectedStation,
+      station: _snapshotStation,
       elevation: selectedElevation,
     );
   }
@@ -96,7 +101,7 @@ final class RadarController {
     if (current == null) return '';
     return [
       mode.apiValue,
-      selectedStation?.id ?? '_',
+      _snapshotStation?.id ?? '_',
       selectedElevation ?? '_',
       current.version,
     ].join(':');
@@ -157,6 +162,7 @@ final class RadarController {
         selectedStation = _stationById(selectedId);
         _normalizeSelection();
       }
+      _selectNearbyDetailStation();
     } catch (error) {
       if (!_disposed) stationsError = error.toString();
     } finally {
@@ -201,12 +207,13 @@ final class RadarController {
     if (mode.requiresStation && selectedStation == null) {
       radarError = 'Select a radar station on the map.';
       snapshot = null;
+      _snapshotStation = null;
       _notify();
       return;
     }
     final request = ++_radarRequest;
     final requestMode = mode;
-    final requestStation = selectedStation;
+    final requestStation = _stationForMode(requestMode);
     final requestElevation = selectedElevation;
     _loadingRadar = true;
     _notify();
@@ -218,9 +225,41 @@ final class RadarController {
       );
       if (_disposed || request != _radarRequest) return;
       snapshot = fresh;
+      _snapshotStation = requestStation;
       radarError = null;
     } catch (error) {
-      if (!_disposed && request == _radarRequest) radarError = error.toString();
+      final snapshotAtFailure = snapshot;
+      var recovered = false;
+      if (!_disposed &&
+          request == _radarRequest &&
+          requestMode == RadarMode.aggregate &&
+          requestStation != null) {
+        try {
+          final fallback = await _api.fetchLatest(mode: RadarMode.aggregate);
+          if (!_disposed &&
+              request == _radarRequest &&
+              mode == requestMode &&
+              nearbyDetailStation?.id == requestStation.id) {
+            // Do not let a slower regional response replace a detail snapshot
+            // that arrived from this station's SSE stream in the meantime.
+            if (identical(snapshot, snapshotAtFailure)) {
+              snapshot = fallback;
+              _snapshotStation = null;
+            }
+            radarError = null;
+            recovered = true;
+          }
+        } catch (_) {
+          // Report the original explicit-detail error below. The periodic
+          // refresh and update stream will continue retrying that station.
+        }
+      }
+      if (!_disposed &&
+          request == _radarRequest &&
+          !recovered &&
+          identical(snapshot, snapshotAtFailure)) {
+        radarError = error.toString();
+      }
     } finally {
       if (request == _radarRequest) _loadingRadar = false;
       _notify();
@@ -239,6 +278,7 @@ final class RadarController {
     mode = next;
     _normalizeSelection();
     snapshot = null;
+    _snapshotStation = null;
     radarError = null;
     _invalidateAndRefresh();
   }
@@ -251,6 +291,7 @@ final class RadarController {
     }
     _normalizeSelection();
     snapshot = null;
+    _snapshotStation = null;
     radarError = null;
     _invalidateAndRefresh();
   }
@@ -260,12 +301,34 @@ final class RadarController {
     if (station != null) selectStation(station);
   }
 
+  /// Updates the camera location used to choose Nearby's one detail radar.
+  ///
+  /// The location is retained when the station catalog has not arrived yet;
+  /// [refreshStations] applies it as soon as stations become available. A
+  /// refresh is triggered only when the resulting station ID changes.
+  bool updateNearbyDetailStation({
+    required double latitude,
+    required double longitude,
+  }) {
+    if (_disposed ||
+        !latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90) {
+      return false;
+    }
+    _nearbyCenterLatitude = latitude;
+    _nearbyCenterLongitude = longitude;
+    return _selectNearbyDetailStation();
+  }
+
   void selectElevation(String elevation) {
     if (!elevations.contains(elevation) || elevation == selectedElevation) {
       return;
     }
     selectedElevation = elevation;
     snapshot = null;
+    _snapshotStation = null;
     _invalidateAndRefresh();
   }
 
@@ -372,6 +435,37 @@ final class RadarController {
     return null;
   }
 
+  RadarStation? _stationForMode(RadarMode targetMode) =>
+      targetMode == RadarMode.aggregate ? nearbyDetailStation : selectedStation;
+
+  bool _selectNearbyDetailStation() {
+    final latitude = _nearbyCenterLatitude;
+    final longitude = _nearbyCenterLongitude;
+    if (latitude == null || longitude == null) return false;
+
+    final next = nearestNearbyReflectivityStation(
+      stations: stations,
+      latitude: latitude,
+      longitude: longitude,
+      currentStation: nearbyDetailStation,
+    );
+    if (next?.id == nearbyDetailStation?.id) {
+      // Keep capabilities and display metadata current after a catalog refresh
+      // without treating the same radar as a new rendering generation.
+      nearbyDetailStation = next;
+      return false;
+    }
+
+    nearbyDetailStation = next;
+    if (mode == RadarMode.aggregate) {
+      radarError = null;
+      _invalidateAndRefresh();
+    } else {
+      _notify();
+    }
+    return true;
+  }
+
   void _normalizeSelection() {
     final station = selectedStation;
     final available = elevations;
@@ -403,9 +497,11 @@ final class RadarController {
       return;
     }
 
+    final streamMode = mode;
+    final streamStation = _stationForMode(streamMode);
     final stream = _api.watchUpdates(
-      mode: mode,
-      station: selectedStation,
+      mode: streamMode,
+      station: streamStation,
       elevation: selectedElevation,
     );
     _updatesSubscription = stream.listen(
@@ -414,6 +510,7 @@ final class RadarController {
         if (update.snapshot != null &&
             (update.radarChanged || snapshot == null)) {
           snapshot = update.snapshot;
+          _snapshotStation = streamStation;
           radarError = null;
           _notify();
         }

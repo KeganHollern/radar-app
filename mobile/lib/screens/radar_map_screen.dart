@@ -6,6 +6,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_config.dart';
+import '../controllers/nearby_location_gate.dart';
 import '../controllers/radar_controller.dart';
 import '../controllers/startup_camera_focus.dart';
 import '../models/alert_selection.dart';
@@ -36,6 +37,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   late final RadarController _radar;
   final LocationService _location = LocationService();
   final StartupCameraFocus _startupCameraFocus = StartupCameraFocus();
+  final NearbyLocationGate _nearbyLocationGate = NearbyLocationGate();
   MapLibreMapController? _map;
   LocationAccess _locationAccess = LocationAccess.checking;
   bool _styleLoaded = false;
@@ -50,6 +52,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   bool _styleSyncPending = false;
   bool _forceStyleSync = false;
   bool _handlingAlertTap = false;
+  LatLng? _latestUserLocation;
 
   @override
   void initState() {
@@ -85,6 +88,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   void _onMapCreated(MapLibreMapController controller) {
     _map = controller;
     controller.onFeatureTapped.add(_onFeatureTapped);
+    _updateNearbyDetailStation(controller.cameraPosition?.target);
     unawaited(_applyStartupCameraFocus());
   }
 
@@ -95,6 +99,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _renderedRadarKey = '';
     _renderedStationRevision = -1;
     _renderedAlertRevision = -1;
+    _updateNearbyDetailStation(_map?.cameraPosition?.target);
     _queueStyleSync(force: true);
     unawaited(_applyStartupCameraFocus());
     if (_pinLocation && _locationAccess == LocationAccess.granted) {
@@ -103,7 +108,15 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   void _onUserLocationUpdated(UserLocation location) {
+    if (!_nearbyLocationGate.accept(
+      timestamp: location.timestamp,
+      horizontalAccuracy: location.horizontalAccuracy,
+    )) {
+      return;
+    }
+    _latestUserLocation = location.position;
     _startupCameraFocus.updateLocation(location.position);
+    if (_pinLocation) _updateNearbyDetailStation(location.position);
     unawaited(_applyStartupCameraFocus());
   }
 
@@ -127,6 +140,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     } finally {
       _startupCameraFocus.finish(succeeded: succeeded);
     }
+    _updateNearbyDetailStation(succeeded ? target : map.cameraPosition?.target);
   }
 
   void _onMapPointerDown(PointerDownEvent event) {
@@ -351,6 +365,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     final next = !_pinLocation;
     if (next) _startupCameraFocus.abandon();
     setState(() => _pinLocation = next);
+    if (next) _updateNearbyDetailStation(_latestUserLocation);
     await _setTrackingMode(
       next ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none,
     );
@@ -371,9 +386,21 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   void _onCameraIdle() {
-    if (!_pinLocation || !_restoreTracking) return;
-    _restoreTracking = false;
-    unawaited(_setTrackingMode(MyLocationTrackingMode.tracking));
+    _updateNearbyDetailStation(
+      _pinLocation ? _latestUserLocation : _map?.cameraPosition?.target,
+    );
+    if (_pinLocation && _restoreTracking) {
+      _restoreTracking = false;
+      unawaited(_setTrackingMode(MyLocationTrackingMode.tracking));
+    }
+  }
+
+  void _updateNearbyDetailStation(LatLng? target) {
+    if (target == null) return;
+    _radar.updateNearbyDetailStation(
+      latitude: target.latitude,
+      longitude: target.longitude,
+    );
   }
 
   @override

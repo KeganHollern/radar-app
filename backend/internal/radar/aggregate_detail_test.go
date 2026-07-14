@@ -23,10 +23,34 @@ import (
 	"github.com/KeganHollern/radar-app/backend/internal/upstream"
 )
 
+func TestAggregateNormalizePreservesExplicitDetailStationAndLegacyConus(t *testing.T) {
+	service := &Service{}
+	for _, raw := range []string{"", "_", "conus", " CONUS "} {
+		selection, err := service.Normalize(Selection{Product: "aggregate", Station: raw})
+		if err != nil {
+			t.Fatalf("normalize %q: %v", raw, err)
+		}
+		if selection.Station != "conus" || selection.Elevation != "0.5" {
+			t.Fatalf("normalize %q = %#v", raw, selection)
+		}
+	}
+	selection, err := service.Normalize(Selection{Product: "aggregate", Station: "kgrk"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Station != "KGRK" {
+		t.Fatalf("explicit aggregate station = %q", selection.Station)
+	}
+	for _, invalid := range []string{"K!!!", "TDFW", "ABC"} {
+		if _, err := service.Normalize(Selection{Product: "aggregate", Station: invalid}); err == nil {
+			t.Fatalf("invalid aggregate detail station %q was accepted", invalid)
+		}
+	}
+}
+
 func TestAggregateTileAddsExactLocalSuperResolutionDetailAtHighZoom(t *testing.T) {
 	globalAnchor := time.Date(2026, 7, 14, 2, 20, 0, 0, time.UTC)
 	localAnchor := globalAnchor.Add(10 * time.Minute)
-	futureScan := localAnchor.Add(5 * time.Minute)
 	baseColor := color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff}
 	strongColor := color.NRGBA{R: 0x28, G: 0xd6, B: 0x4a, A: 0xff}
 	basePNG := solidRadarPNG(t, baseColor)
@@ -56,12 +80,6 @@ func TestAggregateTileAddsExactLocalSuperResolutionDetailAtHighZoom(t *testing.T
 		}
 
 		switch strings.ToLower(r.URL.Query().Get("request")) {
-		case "getcapabilities":
-			if r.URL.Path != "/kgrk/ows" {
-				http.Error(w, "unexpected capabilities endpoint", http.StatusBadRequest)
-				return
-			}
-			writeRadarCapability(w, "kgrk_sr_bref", futureScan, globalAnchor, localAnchor, futureScan)
 		case "getmap":
 			request := mapRequest{
 				path:   r.URL.Path,
@@ -90,13 +108,20 @@ func TestAggregateTileAddsExactLocalSuperResolutionDetailAtHighZoom(t *testing.T
 	service := newAggregateDetailTestService(server)
 	result, err := service.aggregateTile(
 		context.Background(),
-		Selection{Product: "aggregate", Station: "conus", Elevation: "0.5"},
+		Selection{Product: "aggregate", Station: "KGRK", Elevation: "0.5"},
 		Latest{
 			ObservedAt: globalAnchor,
+			Station:    "KGRK",
 			Version:    "aggregate-generation",
 			Components: map[string]LatestComponent{
 				"alaska": {ObservedAt: globalAnchor},
 				"conus":  {ObservedAt: localAnchor},
+			},
+			Detail: &AggregateDetail{
+				Station:    "KGRK",
+				ObservedAt: localAnchor,
+				Latitude:   30.7218,
+				Longitude:  -97.3828,
 			},
 		},
 		9,
@@ -111,8 +136,8 @@ func TestAggregateTileAddsExactLocalSuperResolutionDetailAtHighZoom(t *testing.T
 	gotRequests := append([]mapRequest(nil), requests...)
 	gotCatalogCalls := catalogCalls
 	mu.Unlock()
-	if gotCatalogCalls != 1 {
-		t.Fatalf("station catalog calls = %d, want 1", gotCatalogCalls)
+	if gotCatalogCalls != 0 {
+		t.Fatalf("tile request performed %d station metadata calls", gotCatalogCalls)
 	}
 	if len(gotRequests) != 2 {
 		t.Fatalf("GetMap requests = %#v, want one aggregate and one station request", gotRequests)
@@ -212,6 +237,58 @@ func TestAggregateTileKeepsRegionalMosaicBelowDetailZoom(t *testing.T) {
 	}
 }
 
+func TestAggregatePinnedDetailPreservesRegionalBaseOutsideStationCoverage(t *testing.T) {
+	anchor := time.Date(2026, 7, 14, 14, 34, 18, 0, time.UTC)
+	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
+	var stationCalls atomic.Int32
+	var baseCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.URL.Query().Get("request"), "GetMap") {
+			http.Error(w, "tile rendering must not fetch metadata", http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Path == "/kgrk/ows" {
+			stationCalls.Add(1)
+			http.Error(w, "out-of-coverage station request", http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Path != "/conus/conus_bref_qcd/ows" {
+			http.Error(w, "unexpected map endpoint", http.StatusBadRequest)
+			return
+		}
+		baseCalls.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(basePNG)
+	}))
+	defer server.Close()
+
+	x, y := slippyTileForLocation(9, 40.7, -74)
+	result, err := newAggregateDetailTestService(server).aggregateTile(
+		context.Background(),
+		Selection{Product: "aggregate", Station: "KGRK"},
+		Latest{
+			Station: "KGRK",
+			Version: "pinned-kgrk-generation",
+			Components: map[string]LatestComponent{
+				"conus": {ObservedAt: anchor},
+			},
+			Detail: &AggregateDetail{Station: "KGRK", ObservedAt: anchor, Latitude: 30.7217, Longitude: -97.3828},
+		},
+		9,
+		x,
+		y,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(result.Value.Body, basePNG) {
+		t.Fatal("out-of-coverage tile changed regional base")
+	}
+	if baseCalls.Load() != 1 || stationCalls.Load() != 0 {
+		t.Fatalf("base/station calls = %d/%d", baseCalls.Load(), stationCalls.Load())
+	}
+}
+
 func TestAggregateNationalOverviewCompositesExactRegionalGenerations(t *testing.T) {
 	latest := Latest{
 		Version:    "national-generation",
@@ -282,6 +359,56 @@ func TestAggregateNationalOverviewCompositesExactRegionalGenerations(t *testing.
 		if got := color.NRGBAModel.Convert(rendered.At(index, 0)).(color.NRGBA); got != regionColors[region.name] {
 			t.Fatalf("%s pixel = %#v, want %#v", region.name, got, regionColors[region.name])
 		}
+	}
+}
+
+func TestAggregateNationalBaseCacheIsSharedAcrossDetailSelections(t *testing.T) {
+	anchor := time.Date(2026, 7, 14, 14, 34, 18, 0, time.UTC)
+	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
+	var mapCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.URL.Query().Get("request"), "GetMap") || r.URL.Path != "/conus/conus_bref_qcd/ows" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		mapCalls.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(basePNG)
+	}))
+	defer server.Close()
+
+	service := newAggregateDetailTestService(server)
+	var firstBody []byte
+	for _, detail := range []AggregateDetail{
+		{Station: "KGRK", ObservedAt: anchor, Latitude: 30.7217, Longitude: -97.3828},
+		{Station: "KSJT", ObservedAt: anchor.Add(-time.Minute), Latitude: 31.3711, Longitude: -100.4922},
+	} {
+		result, err := service.aggregateTile(
+			context.Background(),
+			Selection{Product: "aggregate", Station: detail.Station},
+			Latest{
+				Station: detail.Station,
+				Version: detail.Station + "-detail-generation",
+				Components: map[string]LatestComponent{
+					"conus": {ObservedAt: anchor},
+				},
+				Detail: &detail,
+			},
+			0,
+			0,
+			0,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if firstBody == nil {
+			firstBody = append([]byte(nil), result.Value.Body...)
+		} else if !bytes.Equal(result.Value.Body, firstBody) {
+			t.Fatal("national base changed with detail selection")
+		}
+	}
+	if mapCalls.Load() != 1 {
+		t.Fatalf("regional base map calls = %d, want shared cache hit", mapCalls.Load())
 	}
 }
 
@@ -380,12 +507,9 @@ func TestAggregateDetailRefreshesBehindCapabilitiesAndPinsGeneration(t *testing.
 	oldScan := time.Date(2026, 7, 14, 2, 20, 0, 0, time.UTC)
 	anchorScan := oldScan.Add(5 * time.Minute)
 	futureScan := anchorScan.Add(5 * time.Minute)
-	overlayPNG := solidRadarPNG(t, color.NRGBA{R: 0x28, G: 0xd6, B: 0x4a, A: 0xff})
 	var published atomic.Int32
 	var capabilityCalls atomic.Int32
 	var mapCalls atomic.Int32
-	var mu sync.Mutex
-	var requestedTimes []string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/stations" {
@@ -406,11 +530,7 @@ func TestAggregateDetailRefreshesBehindCapabilitiesAndPinsGeneration(t *testing.
 			}
 		case "getmap":
 			mapCalls.Add(1)
-			mu.Lock()
-			requestedTimes = append(requestedTimes, r.URL.Query().Get("time"))
-			mu.Unlock()
-			w.Header().Set("Content-Type", "image/png")
-			_, _ = w.Write(overlayPNG)
+			http.Error(w, "detail resolution must not fetch tiles", http.StatusInternalServerError)
 		default:
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 		}
@@ -423,18 +543,15 @@ func TestAggregateDetailRefreshesBehindCapabilitiesAndPinsGeneration(t *testing.
 		t.Fatal(err)
 	}
 	published.Store(1)
-	latest := Latest{
-		Version: "stable-aggregate-generation",
-		Components: map[string]LatestComponent{
-			"conus": {ObservedAt: anchorScan},
-		},
+	components := map[string]LatestComponent{
+		"conus": {ObservedAt: anchorScan},
 	}
-	first, err := service.fetchAggregateStationDetail(context.Background(), latest, 9, 116, 210)
+	first, err := service.resolveAggregateDetail(context.Background(), "KGRK", components)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.observedAt.Equal(anchorScan) {
-		t.Fatalf("first detail generation = %s, want %s", first.observedAt, anchorScan)
+	if !first.ObservedAt.Equal(anchorScan) {
+		t.Fatalf("first detail generation = %s, want %s", first.ObservedAt, anchorScan)
 	}
 	if capabilityCalls.Load() != 2 {
 		t.Fatalf("capabilities calls = %d, want initial load plus forced refresh", capabilityCalls.Load())
@@ -443,28 +560,22 @@ func TestAggregateDetailRefreshesBehindCapabilitiesAndPinsGeneration(t *testing.
 	// A newer station scan appearing upstream must not change an existing
 	// aggregate generation or produce a second station tile cache entry.
 	published.Store(2)
-	second, err := service.fetchAggregateStationDetail(context.Background(), latest, 9, 116, 210)
+	second, err := service.resolveAggregateDetail(context.Background(), "KGRK", components)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.observedAt.Equal(anchorScan) {
-		t.Fatalf("second detail generation = %s, want pinned %s", second.observedAt, anchorScan)
+	if !second.ObservedAt.Equal(anchorScan) {
+		t.Fatalf("second detail generation = %s, want pinned %s", second.ObservedAt, anchorScan)
 	}
 	if capabilityCalls.Load() != 2 {
 		t.Fatalf("capabilities calls after rollover = %d, want 2", capabilityCalls.Load())
 	}
-	if mapCalls.Load() != 1 {
-		t.Fatalf("station GetMap calls = %d, want exact-generation cache hit", mapCalls.Load())
-	}
-	mu.Lock()
-	gotTimes := append([]string(nil), requestedTimes...)
-	mu.Unlock()
-	if len(gotTimes) != 1 || gotTimes[0] != anchorScan.Format(time.RFC3339) {
-		t.Fatalf("station GetMap times = %#v, want only %q", gotTimes, anchorScan.Format(time.RFC3339))
+	if mapCalls.Load() != 0 {
+		t.Fatalf("station GetMap calls during detail resolution = %d", mapCalls.Load())
 	}
 }
 
-func TestAggregateDetailTimeoutReturnsReadyRegionalTile(t *testing.T) {
+func TestAggregateConusHighZoomRemainsSeamlessRegionalBase(t *testing.T) {
 	anchor := time.Date(2026, 7, 14, 2, 30, 0, 0, time.UTC)
 	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
 	stationStarted := make(chan struct{})
@@ -493,7 +604,6 @@ func TestAggregateDetailTimeoutReturnsReadyRegionalTile(t *testing.T) {
 	defer server.Close()
 
 	service := newAggregateDetailTestService(server)
-	service.aggregateDetailTimeout = 75 * time.Millisecond
 	startedAt := time.Now()
 	result, err := service.aggregateTile(
 		context.Background(),
@@ -520,8 +630,71 @@ func TestAggregateDetailTimeoutReturnsReadyRegionalTile(t *testing.T) {
 	}
 	select {
 	case <-stationStarted:
+		t.Fatal("conus high-zoom tile requested automatic station detail")
 	default:
-		t.Fatal("test did not reach the delayed station tile")
+	}
+}
+
+func TestAggregatePinnedDetailUsesCallerTimeoutThenFallsBackToRegionalBase(t *testing.T) {
+	anchor := time.Date(2026, 7, 14, 2, 30, 0, 0, time.UTC)
+	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
+	stationStarted := make(chan struct{})
+	var startOnce sync.Once
+	var metadataCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.ToLower(r.URL.Query().Get("request")) {
+		case "getcapabilities":
+			metadataCalls.Add(1)
+			http.Error(w, "tile rendering must not fetch capabilities", http.StatusInternalServerError)
+		case "getmap":
+			if r.URL.Path == "/conus/conus_bref_qcd/ows" {
+				w.Header().Set("Content-Type", "image/png")
+				_, _ = w.Write(basePNG)
+				return
+			}
+			startOnce.Do(func() { close(stationStarted) })
+			<-r.Context().Done()
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	result, err := newAggregateDetailTestService(server).aggregateTile(
+		ctx,
+		Selection{Product: "aggregate", Station: "KGRK", Elevation: "0.5"},
+		Latest{
+			Station: "KGRK",
+			Version: "pinned-detail-generation",
+			Components: map[string]LatestComponent{
+				"conus": {ObservedAt: anchor},
+			},
+			Detail: &AggregateDetail{Station: "KGRK", ObservedAt: anchor, Latitude: 30.7218, Longitude: -97.3828},
+		},
+		9,
+		116,
+		210,
+	)
+	elapsed := time.Since(startedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed < 50*time.Millisecond {
+		t.Fatalf("detail degraded before caller timeout: %s", elapsed)
+	}
+	if !bytes.Equal(result.Value.Body, basePNG) {
+		t.Fatal("timed-out pinned detail did not return regional base")
+	}
+	if metadataCalls.Load() != 0 {
+		t.Fatalf("tile rendering made %d metadata calls", metadataCalls.Load())
+	}
+	select {
+	case <-stationStarted:
+	default:
+		t.Fatal("test did not reach pinned station tile")
 	}
 }
 
@@ -553,12 +726,14 @@ func TestAggregateDetailMalformedImageFallsBackToRegionalTile(t *testing.T) {
 	service := newAggregateDetailTestService(server)
 	result, err := service.aggregateTile(
 		context.Background(),
-		Selection{Product: "aggregate", Station: "conus", Elevation: "0.5"},
+		Selection{Product: "aggregate", Station: "KGRK", Elevation: "0.5"},
 		Latest{
+			Station: "KGRK",
 			Version: "generation",
 			Components: map[string]LatestComponent{
 				"conus": {ObservedAt: anchor},
 			},
+			Detail: &AggregateDetail{Station: "KGRK", ObservedAt: anchor, Latitude: 30.7218, Longitude: -97.3828},
 		},
 		9,
 		116,
@@ -568,14 +743,13 @@ func TestAggregateDetailMalformedImageFallsBackToRegionalTile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(result.Value.Body, basePNG) {
-		t.Fatal("malformed optional station image changed the regional tile")
+		t.Fatal("malformed pinned station image did not fall back to regional data")
 	}
 }
 
-func TestAggregateDetailStaleStationFallsBackToRegionalTile(t *testing.T) {
+func TestAggregateDetailRejectsStaleStationBeforeManifest(t *testing.T) {
 	anchor := time.Date(2026, 7, 14, 2, 30, 0, 0, time.UTC)
 	staleScan := anchor.Add(-30 * time.Minute)
-	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
 	var capabilityCalls atomic.Int32
 	var stationMapCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -589,13 +763,8 @@ func TestAggregateDetailStaleStationFallsBackToRegionalTile(t *testing.T) {
 			capabilityCalls.Add(1)
 			writeRadarCapability(w, "kgrk_sr_bref", staleScan, staleScan)
 		case "getmap":
-			w.Header().Set("Content-Type", "image/png")
-			if r.URL.Path == "/conus/conus_bref_qcd/ows" {
-				_, _ = w.Write(basePNG)
-				return
-			}
 			stationMapCalls.Add(1)
-			_, _ = w.Write(basePNG)
+			http.Error(w, "stale detail must not fetch a tile", http.StatusInternalServerError)
 		default:
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 		}
@@ -603,116 +772,17 @@ func TestAggregateDetailStaleStationFallsBackToRegionalTile(t *testing.T) {
 	defer server.Close()
 
 	service := newAggregateDetailTestService(server)
-	result, err := service.aggregateTile(
-		context.Background(),
-		Selection{Product: "aggregate", Station: "conus", Elevation: "0.5"},
-		Latest{
-			Version: "generation",
-			Components: map[string]LatestComponent{
-				"conus": {ObservedAt: anchor},
-			},
-		},
-		9,
-		116,
-		210,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(result.Value.Body, basePNG) {
-		t.Fatal("stale station scan changed the current regional tile")
+	_, err := service.resolveAggregateDetail(context.Background(), "KGRK", map[string]LatestComponent{
+		"conus": {ObservedAt: anchor},
+	})
+	if err == nil {
+		t.Fatal("stale station was accepted into aggregate generation")
 	}
 	if capabilityCalls.Load() != 2 {
 		t.Fatalf("station capabilities calls = %d, want cached check plus refresh", capabilityCalls.Load())
 	}
 	if stationMapCalls.Load() != 0 {
 		t.Fatalf("stale station GetMap calls = %d, want 0", stationMapCalls.Load())
-	}
-}
-
-func TestAggregateHighZoomGenerationIsStableAcrossStationRollover(t *testing.T) {
-	anchor := time.Date(2026, 7, 14, 2, 30, 0, 0, time.UTC)
-	future := anchor.Add(5 * time.Minute)
-	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
-	futurePNG := solidRadarPNG(t, color.NRGBA{R: 0xff, A: 0xff})
-	transparentPNG := encodePNG(t, image.NewNRGBA(image.Rect(0, 0, 256, 256)))
-	var rolledOver atomic.Bool
-	var mu sync.Mutex
-	var baseTimes []string
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/stations" {
-			w.Header().Set("Content-Type", "application/geo+json")
-			_, _ = w.Write([]byte(aggregateDetailStationCatalog()))
-			return
-		}
-		switch strings.ToLower(r.URL.Query().Get("request")) {
-		case "getcapabilities":
-			if rolledOver.Load() {
-				writeRadarCapability(w, "kgrk_sr_bref", future, anchor, future)
-				return
-			}
-			writeRadarCapability(w, "kgrk_sr_bref", anchor, anchor)
-		case "getmap":
-			w.Header().Set("Content-Type", "image/png")
-			requestedAt := r.URL.Query().Get("time")
-			if r.URL.Path == "/conus/conus_bref_qcd/ows" {
-				mu.Lock()
-				baseTimes = append(baseTimes, requestedAt)
-				mu.Unlock()
-				if requestedAt == anchor.Format(time.RFC3339) {
-					_, _ = w.Write(basePNG)
-				} else {
-					_, _ = w.Write(futurePNG)
-				}
-				return
-			}
-			_, _ = w.Write(transparentPNG)
-		default:
-			http.Error(w, "unexpected request", http.StatusBadRequest)
-		}
-	}))
-	defer server.Close()
-
-	latest := Latest{
-		Version: "stable-generation",
-		Components: map[string]LatestComponent{
-			"conus": {ObservedAt: anchor},
-		},
-	}
-	selection := Selection{Product: "aggregate", Station: "conus", Elevation: "0.5"}
-	first, err := newAggregateDetailTestService(server).aggregateTile(
-		context.Background(),
-		selection,
-		latest,
-		9,
-		116,
-		210,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rolledOver.Store(true)
-	second, err := newAggregateDetailTestService(server).aggregateTile(
-		context.Background(),
-		selection,
-		latest,
-		9,
-		116,
-		210,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(first.Value.Body, second.Value.Body) {
-		t.Fatal("identical aggregate generation changed after station rollover")
-	}
-	mu.Lock()
-	gotBaseTimes := append([]string(nil), baseTimes...)
-	mu.Unlock()
-	wantTime := anchor.Format(time.RFC3339)
-	if len(gotBaseTimes) != 2 || gotBaseTimes[0] != wantTime || gotBaseTimes[1] != wantTime {
-		t.Fatalf("base times across rollover = %#v, want two %q requests", gotBaseTimes, wantTime)
 	}
 }
 
@@ -939,6 +1009,134 @@ func TestAggregateSignedSnapshotResolvesColdReplicaWithoutMetadataRefresh(t *tes
 	}
 }
 
+func TestAggregateDetailSnapshotPinsExactStationScanAcrossColdReplicas(t *testing.T) {
+	anchor := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Minute)
+	stationScan := anchor.Add(-3 * time.Minute)
+	futureStationScan := anchor.Add(2 * time.Minute)
+	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
+	detailColor := color.NRGBA{R: 0x28, G: 0xd6, B: 0x4a, A: 0xff}
+	detailPNG := solidRadarPNG(t, detailColor)
+	var metadataLocked atomic.Bool
+	var metadataCalls atomic.Int32
+	var mu sync.Mutex
+	var mapRequests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/stations" {
+			metadataCalls.Add(1)
+			if metadataLocked.Load() {
+				http.Error(w, "cold tile must not fetch station catalog", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/geo+json")
+			_, _ = w.Write([]byte(aggregateDetailStationCatalog()))
+			return
+		}
+		switch strings.ToLower(r.URL.Query().Get("request")) {
+		case "getcapabilities":
+			metadataCalls.Add(1)
+			if metadataLocked.Load() {
+				http.Error(w, "cold tile must not fetch capabilities", http.StatusInternalServerError)
+				return
+			}
+			if r.URL.Path == "/kgrk/ows" {
+				writeRadarCapability(w, "kgrk_sr_bref", futureStationScan, stationScan, futureStationScan)
+				return
+			}
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if len(parts) != 3 {
+				http.Error(w, "unexpected capabilities endpoint", http.StatusBadRequest)
+				return
+			}
+			writeRadarCapability(w, parts[1], anchor, anchor)
+		case "getmap":
+			requested := r.URL.Path + "=" + r.URL.Query().Get("time")
+			mu.Lock()
+			mapRequests = append(mapRequests, requested)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "image/png")
+			if r.URL.Path == "/conus/conus_bref_qcd/ows" {
+				_, _ = w.Write(basePNG)
+				return
+			}
+			if r.URL.Path == "/kgrk/ows" {
+				_, _ = w.Write(detailPNG)
+				return
+			}
+			http.Error(w, "unexpected map endpoint", http.StatusBadRequest)
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	issuer := newAggregateDetailTestService(server)
+	latest, err := issuer.Latest(context.Background(), Selection{Product: "aggregate", Station: "KGRK"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Detail == nil || latest.Detail.Station != "KGRK" || !latest.Detail.ObservedAt.Equal(stationScan) {
+		t.Fatalf("issued detail = %#v", latest.Detail)
+	}
+	payload := aggregateSnapshotPayload(t, latest.GenerationToken)
+	if payload[0] != aggregateSnapshotSchemaV2 {
+		t.Fatalf("detail snapshot schema = %d", payload[0])
+	}
+	callsAfterLatest := metadataCalls.Load()
+	metadataLocked.Store(true)
+
+	cold := newAggregateDetailTestService(server)
+	result, err := cold.Tile(
+		context.Background(),
+		Selection{Product: "aggregate", Station: "KGRK"},
+		latest.Version,
+		latest.GenerationToken,
+		9,
+		116,
+		210,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadataCalls.Load() != callsAfterLatest {
+		t.Fatalf("cold replica metadata calls = %d -> %d", callsAfterLatest, metadataCalls.Load())
+	}
+	rendered, err := png.Decode(bytes.NewReader(result.Value.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := color.NRGBAModel.Convert(rendered.At(128, 128)).(color.NRGBA); got != detailColor {
+		t.Fatalf("cold detail pixel = %#v", got)
+	}
+
+	mu.Lock()
+	gotMaps := append([]string(nil), mapRequests...)
+	mu.Unlock()
+	if len(gotMaps) != 2 ||
+		!containsString(gotMaps, "/conus/conus_bref_qcd/ows="+anchor.Format(time.RFC3339)) ||
+		!containsString(gotMaps, "/kgrk/ows="+stationScan.Format(time.RFC3339)) {
+		t.Fatalf("cold replica maps = %#v", gotMaps)
+	}
+
+	_, err = cold.Tile(
+		context.Background(),
+		Selection{Product: "aggregate", Station: "KSJT"},
+		latest.Version,
+		latest.GenerationToken,
+		9,
+		116,
+		210,
+	)
+	if !errors.Is(err, ErrInvalidGeneration) {
+		t.Fatalf("station path mismatch error = %v", err)
+	}
+	mu.Lock()
+	mapCount := len(mapRequests)
+	mu.Unlock()
+	if mapCount != 2 || metadataCalls.Load() != callsAfterLatest {
+		t.Fatal("station path tampering reached upstream")
+	}
+}
+
 func TestAggregateSignedSnapshotExpiredCurrentFallbackAndReplayRejection(t *testing.T) {
 	oldObservation := time.Now().UTC().Truncate(time.Second).Add(-tileGenerationGrace - time.Minute)
 	currentObservation := time.Now().UTC().Truncate(time.Second)
@@ -1126,8 +1324,8 @@ func TestAggregateTileRetainsKnownGenerationAcrossWarmReplicaRollover(t *testing
 	gotMapTimes := append([]string(nil), mapTimes...)
 	mu.Unlock()
 	wantTime := firstObservation.Format(time.RFC3339)
-	if len(gotMapTimes) != 2 {
-		t.Fatalf("remembered generation maps = %#v, want base and station", gotMapTimes)
+	if len(gotMapTimes) != 1 {
+		t.Fatalf("remembered conus generation maps = %#v, want regional base only", gotMapTimes)
 	}
 	for _, got := range gotMapTimes {
 		if !strings.HasSuffix(got, "="+wantTime) {
@@ -1171,36 +1369,101 @@ func TestAggregateTileRetainsKnownGenerationAcrossWarmReplicaRollover(t *testing
 	mu.Lock()
 	mapCount := len(mapTimes)
 	mu.Unlock()
-	if mapCount != 3 {
+	if mapCount != 2 {
 		t.Fatalf("unknown generation triggered GetMap; map calls = %d", mapCount)
 	}
 }
 
-func TestAggregateDetailStationSelectionIsStableAcrossAdjacentTiles(t *testing.T) {
-	body := []byte(aggregateDetailStationCatalog())
-	first, err := nearestAggregateDetailStation(body, 9, 116, 210)
-	if err != nil {
-		t.Fatal(err)
+func TestAggregatePinnedDetailIsConsistentAcrossFormerSanAntonioGridBoundaries(t *testing.T) {
+	anchor := time.Date(2026, 7, 14, 14, 34, 18, 0, time.UTC)
+	stationScan := anchor.Add(-2*time.Minute - 27*time.Second)
+	basePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
+	detailColor := color.NRGBA{R: 0x28, G: 0xd6, B: 0x4a, A: 0xff}
+	detailPNG := solidRadarPNG(t, detailColor)
+	type request struct {
+		path string
+		time string
 	}
-	second, err := nearestAggregateDetailStation(body, 9, 117, 210)
-	if err != nil {
-		t.Fatal(err)
+	var mu sync.Mutex
+	var requests []request
+	var metadataCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.ToLower(r.URL.Query().Get("request")) {
+		case "getcapabilities":
+			metadataCalls.Add(1)
+			http.Error(w, "tile rendering must use pinned snapshot metadata", http.StatusInternalServerError)
+		case "getmap":
+			mu.Lock()
+			requests = append(requests, request{path: r.URL.Path, time: r.URL.Query().Get("time")})
+			mu.Unlock()
+			w.Header().Set("Content-Type", "image/png")
+			switch r.URL.Path {
+			case "/conus/conus_bref_qcd/ows":
+				_, _ = w.Write(basePNG)
+			case "/kgrk/ows":
+				_, _ = w.Write(detailPNG)
+			default:
+				http.Error(w, "unexpected station", http.StatusBadRequest)
+			}
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	latest := Latest{
+		Station: "KGRK",
+		Version: "one-pinned-station-generation",
+		Components: map[string]LatestComponent{
+			"conus": {ObservedAt: anchor},
+		},
+		Detail: &AggregateDetail{Station: "KGRK", ObservedAt: stationScan, Latitude: 30.7217, Longitude: -97.3828},
 	}
-	if first.id != "KGRK" || second.id != first.id {
-		t.Fatalf("adjacent tile stations = %q and %q, want stable KGRK source", first.id, second.id)
+	service := newAggregateDetailTestService(server)
+	for _, x := range []int{115, 116} {
+		for _, y := range []int{211, 212} {
+			result, err := service.aggregateTile(
+				context.Background(),
+				Selection{Product: "aggregate", Station: "KGRK", Elevation: "0.5"},
+				latest,
+				9,
+				x,
+				y,
+			)
+			if err != nil {
+				t.Fatalf("tile %d/%d: %v", x, y, err)
+			}
+			rendered, err := png.Decode(bytes.NewReader(result.Value.Body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := color.NRGBAModel.Convert(rendered.At(128, 128)).(color.NRGBA); got != detailColor {
+				t.Fatalf("tile %d/%d detail = %#v", x, y, got)
+			}
+		}
 	}
-	firstZ, firstX, firstY := aggregateDetailSelectionTile(9, 116, 210)
-	secondZ, secondX, secondY := aggregateDetailSelectionTile(9, 117, 210)
-	if firstZ != secondZ || firstX != secondX || firstY != secondY {
-		t.Fatalf(
-			"adjacent tiles selected different parents: %d/%d/%d and %d/%d/%d",
-			firstZ,
-			firstX,
-			firstY,
-			secondZ,
-			secondX,
-			secondY,
-		)
+	if metadataCalls.Load() != 0 {
+		t.Fatalf("tile rendering made %d metadata calls", metadataCalls.Load())
+	}
+	mu.Lock()
+	gotRequests := append([]request(nil), requests...)
+	mu.Unlock()
+	if len(gotRequests) != 8 {
+		t.Fatalf("GetMap requests = %#v", gotRequests)
+	}
+	stationRequests := 0
+	for _, got := range gotRequests {
+		if got.path == "/kgrk/ows" {
+			stationRequests++
+			if got.time != stationScan.Format(time.RFC3339) {
+				t.Fatalf("station scan = %q, want %q", got.time, stationScan.Format(time.RFC3339))
+			}
+		} else if got.path != "/conus/conus_bref_qcd/ows" {
+			t.Fatalf("unexpected source %q", got.path)
+		}
+	}
+	if stationRequests != 4 {
+		t.Fatalf("station requests = %d, want one KGRK request per tile", stationRequests)
 	}
 }
 
@@ -1212,6 +1475,32 @@ func TestAggregateRegionForLocationHandlesAlaskaAcrossDateline(t *testing.T) {
 	}
 	if got := aggregateRegionForLocation(13.45, 144.75); got != "guam" {
 		t.Fatalf("Guam region = %q, want guam", got)
+	}
+}
+
+func TestAggregateDetailCoverageWrapsAcrossAntimeridian(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		stationLongitude float64
+		tileLongitude    float64
+	}{
+		{name: "west station east tile", stationLongitude: -176, tileLongitude: 179},
+		{name: "east station west tile", stationLongitude: 176, tileLongitude: -179},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			x, y := slippyTileForLocation(9, 52, test.tileLongitude)
+			if !aggregateDetailIntersectsTile(AggregateDetail{
+				Station:   "PABC",
+				Latitude:  52,
+				Longitude: test.stationLongitude,
+			}, 9, x, y) {
+				t.Fatalf("station at %g did not cover wrapped tile at %g", test.stationLongitude, test.tileLongitude)
+			}
+		})
+	}
+	x, y := slippyTileForLocation(9, 52, -150)
+	if aggregateDetailIntersectsTile(AggregateDetail{Station: "PABC", Latitude: 52, Longitude: 176}, 9, x, y) {
+		t.Fatal("distant Alaska tile incorrectly intersected station coverage")
 	}
 }
 
@@ -1249,6 +1538,15 @@ func solidRadarPNG(t *testing.T, value color.NRGBA) []byte {
 		source.Pix[offset+3] = value.A
 	}
 	return encodePNG(t, source)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func slippyTileForLocation(z int, latitude, longitude float64) (int, int) {

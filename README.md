@@ -23,8 +23,8 @@ There are deliberately no forecasts, animation loops, or historical timeline.
 - dark, pannable/zoomable MapLibre map with roads and place labels
 - device location dot, one-time local startup focus, and opt-in follow mode that
   keeps the current zoom
-- current MRMS/RIDGE aggregate reflectivity, enriched with local
-  super-resolution station detail when zoomed in
+- current MRMS/RIDGE aggregate reflectivity, enriched when zoomed in with one
+  exact super-resolution station scan pinned to the viewport
 - tap-to-select WSR-88D stations with current reflectivity and radial velocity
 - active NWS alert polygons, persisted per-type visibility settings, overlap
   selection, event colors, and tap-through alert details
@@ -61,6 +61,7 @@ Useful endpoints:
 - `GET /api/v1/stations`
 - `GET /api/v1/alerts`
 - `GET /api/v1/radar/latest?product=aggregate`
+- `GET /api/v1/radar/latest?product=aggregate&station=KEWX`
 - `GET /api/v1/radar/latest?product=velocity&station=KDMX&elevation=0.5`
 - `GET /api/v1/updates` (server-sent events)
 

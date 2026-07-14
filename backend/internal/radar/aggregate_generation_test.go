@@ -82,7 +82,7 @@ func TestAggregateSnapshotRejectsUnknownSchemaAndRegionReorder(t *testing.T) {
 	payload := aggregateSnapshotPayload(t, token)
 
 	unknownSchema := append([]byte(nil), payload...)
-	unknownSchema[0] = aggregateSnapshotSchema + 1
+	unknownSchema[0] = aggregateSnapshotSchemaV2 + 1
 	if _, err := decodeAggregateSnapshot(
 		signedAggregateSnapshot(unknownSchema, latest.Version, aggregateSnapshotTestKey),
 		latest.Version,
@@ -104,6 +104,76 @@ func TestAggregateSnapshotRejectsUnknownSchemaAndRegionReorder(t *testing.T) {
 		now,
 	); err == nil {
 		t.Fatal("expected reordered region observations to be rejected")
+	}
+}
+
+func TestAggregateSnapshotV2RoundTripPinsDetailAndV1RemainsAccepted(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	legacy := aggregateSnapshotFixture(now)
+	legacyToken, err := encodeAggregateSnapshot(legacy, aggregateSnapshotTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload := aggregateSnapshotPayload(t, legacyToken); payload[0] != aggregateSnapshotSchemaV1 {
+		t.Fatalf("legacy snapshot schema = %d", payload[0])
+	}
+	if _, err := decodeAggregateSnapshot(legacyToken, legacy.Version, aggregateSnapshotTestKey, now); err != nil {
+		t.Fatalf("decode schema 1: %v", err)
+	}
+
+	detail := AggregateDetail{
+		Station:    "KGRK",
+		ObservedAt: now.Add(-2 * time.Minute),
+		Latitude:   30.7217,
+		Longitude:  -97.3828,
+	}
+	legacy.Station = detail.Station
+	legacy.Detail = &detail
+	observations := make(map[string]time.Time, len(legacy.Components))
+	for name, component := range legacy.Components {
+		observations[name] = component.ObservedAt
+	}
+	legacy.Version = aggregateVersionWithDetail(observations, nil, detail)
+	token, err := encodeAggregateSnapshot(legacy, aggregateSnapshotTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := aggregateSnapshotPayload(t, token)
+	if payload[0] != aggregateSnapshotSchemaV2 || len(payload) != aggregateSnapshotV2PayloadBytes {
+		t.Fatalf("detail snapshot schema/length = %d/%d", payload[0], len(payload))
+	}
+	if len(token) > aggregateSnapshotMaxLength {
+		t.Fatalf("detail snapshot token length = %d", len(token))
+	}
+	decoded, err := decodeAggregateSnapshot(token, legacy.Version, aggregateSnapshotTestKey, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.latest.Station != detail.Station || decoded.latest.Detail == nil || *decoded.latest.Detail != detail {
+		t.Fatalf("decoded detail = %#v", decoded.latest.Detail)
+	}
+
+	for _, test := range []struct {
+		name   string
+		offset int
+	}{
+		{name: "station", offset: 57},
+		{name: "scan", offset: 68},
+		{name: "latitude", offset: 72},
+		{name: "longitude", offset: 76},
+	} {
+		t.Run("tampered "+test.name, func(t *testing.T) {
+			tamperedPayload := append([]byte(nil), payload...)
+			tamperedPayload[test.offset] ^= 1
+			if _, err := decodeAggregateSnapshot(
+				signedAggregateSnapshot(tamperedPayload, legacy.Version, aggregateSnapshotTestKey),
+				legacy.Version,
+				aggregateSnapshotTestKey,
+				now,
+			); err == nil {
+				t.Fatalf("tampered detail %s was accepted", test.name)
+			}
+		})
 	}
 }
 

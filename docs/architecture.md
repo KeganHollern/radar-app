@@ -45,20 +45,26 @@ Requesting a larger mosaic image would only interpolate its existing cells, so
 the API uses a real zoom-dependent detail tier instead. At zooms 0-6 it pins and
 composites every available regional layer at that aggregate generation's exact
 component times. At zoom 7 and above it requests the exact local regional layer.
-At zoom 9 and above it can additionally overlay one covering station's
-super-resolution reflectivity scan at or immediately before the regional
-observation. The station overlay is filtered below 15 dBZ, limited to a
-two-second enrichment budget, and omitted when it is stale or unavailable. The
-regional mosaic always remains the fallback.
+At zoom 9 and above the client can additionally request one station for the
+entire viewport. Its super-resolution reflectivity scan is resolved once at or
+immediately before the regional observation and then used across every covered
+tile. This avoids the hard seams produced when adjacent tile groups independently
+chose different radars and scan times. The station overlay is filtered below
+15 dBZ and omitted when it is stale or unavailable. The regional mosaic always
+remains the fallback.
 
 This high-zoom overlay is a presentation detail tier, not a different mode or a
-history feature. It remains anchored to the aggregate generation in the tile
-URL. The tile template carries a fixed-format, HMAC-signed snapshot of the five
-ordered component times and missing mask, bound to the existing opaque version.
-Any replica with the shared signing key can therefore reconstruct the exact WMS
-times without pod-local history or a per-tile metadata lookup. Brief in-memory
-history remains only as a mixed-rollout fallback for older URLs without the
-snapshot parameter.
+history feature. While browsing, the chosen radar follows the camera center;
+in Follow mode it follows accepted device locations. A 20 km handoff margin
+prevents source thrash near a station boundary, and the previous complete layer
+stays visible until its replacement is ready. It remains anchored to the
+aggregate generation in the tile URL. The tile template carries a fixed-format,
+HMAC-signed snapshot bound to the existing opaque version: schema 1 carries the
+five ordered component times and missing mask, while schema 2 also pins the
+detail station, exact scan, and canonical coordinates. Any replica with the
+shared signing key can therefore reconstruct the exact WMS times without
+pod-local history or a per-tile metadata lookup. Brief in-memory history remains
+only as a mixed-rollout fallback for older URLs without the snapshot parameter.
 
 The production alternative is to ingest the current MRMS GRIB2 artifact directly,
 for example `MRMS_ReflectivityAtLowestAltitude.latest.grib2.gz`, render immutable
