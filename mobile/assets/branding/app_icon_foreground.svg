@@ -1,37 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <clipPath id="scope">
-      <circle cx="512" cy="512" r="300" />
-    </clipPath>
-  </defs>
+  <!-- Smooth, layered radar returns over a simplified road map. -->
+  <path
+    d="M164 258 C210 188 305 170 382 210 C437 238 474 286 536 292 C616 300 652 342 702 389 C758 442 842 459 864 538 C884 610 829 677 752 688 C679 699 634 647 570 632 C495 615 463 554 398 539 C320 521 270 469 217 436 C153 396 127 317 164 258 Z"
+    fill="#4385BE"
+    fill-opacity="0.9"
+  />
+  <path
+    d="M211 270 C264 217 333 218 392 250 C444 279 477 322 538 326 C598 330 638 365 681 407 C728 452 799 470 816 532 C831 584 790 630 734 638 C674 646 633 600 575 590 C514 579 477 524 416 509 C352 493 311 452 262 420 C213 388 182 313 211 270 Z"
+    fill="#3AA99F"
+  />
+  <path
+    d="M276 284 C319 252 370 260 414 286 C461 314 489 351 541 352 C589 353 621 382 654 416 C692 455 749 477 760 525 C770 563 738 593 698 594 C649 595 616 558 571 550 C524 542 491 497 444 483 C395 469 362 438 326 411 C291 384 252 319 276 284 Z"
+    fill="#879A39"
+  />
+  <path
+    d="M357 305 C392 289 432 305 459 332 C487 359 506 383 543 382 C579 381 602 402 625 429 C651 459 692 480 696 513 C700 539 677 557 651 552 C617 547 592 520 558 515 C522 509 500 476 468 464 C432 450 409 427 385 403 C361 379 337 326 357 305 Z"
+    fill="#D0A215"
+  />
+  <path
+    d="M430 335 C457 329 482 347 500 369 C519 392 531 407 555 408 C581 410 598 426 611 447 C626 471 653 489 652 509 C651 526 635 534 618 525 C595 514 580 494 555 489 C530 484 514 460 492 451 C466 441 450 421 436 399 C422 378 412 344 430 335 Z"
+    fill="#DA702C"
+  />
+  <path
+    d="M487 372 C505 375 516 392 530 409 C543 425 558 433 574 441 C590 449 601 464 598 477 C594 489 579 491 565 482 C550 471 538 457 521 450 C504 443 491 429 484 414 C476 398 474 376 487 372 Z"
+    fill="#D14D41"
+  />
 
-  <circle cx="512" cy="512" r="300" fill="#1C1B1A" stroke="#403E3C" stroke-width="24" />
+  <!-- Boundaries and roads stay visible above the translucent weather layer. -->
+  <path d="M132 352 C260 326 364 347 458 405 C553 463 662 455 884 392" fill="none" stroke="#CECDC3" stroke-opacity="0.58" stroke-width="12" />
+  <path d="M128 580 C256 608 372 564 483 590 C604 618 724 568 892 618" fill="none" stroke="#CECDC3" stroke-opacity="0.52" stroke-width="12" />
+  <path d="M318 142 C349 270 315 392 365 506 C408 604 373 714 340 886" fill="none" stroke="#CECDC3" stroke-opacity="0.34" stroke-width="12" />
+  <path d="M612 138 C579 274 630 383 611 506 C593 619 623 733 596 892" fill="none" stroke="#CECDC3" stroke-opacity="0.34" stroke-width="12" />
+  <path d="M132 750 C286 679 410 660 514 555 C626 441 711 323 884 252" fill="none" stroke="#4385BE" stroke-width="23" />
 
-  <g clip-path="url(#scope)">
-    <path
-      d="M512 512 L694 228 A326 326 0 0 1 820 348 Z"
-      fill="#3AA99F"
-      fill-opacity="0.26"
-    />
-    <circle cx="512" cy="512" r="206" fill="none" stroke="#3AA99F" stroke-width="28" stroke-opacity="0.9" />
-    <circle cx="512" cy="512" r="112" fill="none" stroke="#3AA99F" stroke-width="28" stroke-opacity="0.9" />
-    <path
-      d="M499 499 L734 261 Q747 247 761 261 Q775 275 761 289 L526 526 Z"
-      fill="#4385BE"
-    />
-
-    <path
-      d="M698 324 C718 296 764 294 782 322 C812 323 830 350 819 378 C827 405 804 430 775 426 C754 447 714 436 707 407 C676 398 668 355 698 324 Z"
-      fill="#DA702C"
-    />
-    <path
-      d="M741 333 C756 318 783 322 790 342 C811 350 810 380 789 389 C777 408 746 402 741 380 C722 370 723 344 741 333 Z"
-      fill="#D0A215"
-    />
-    <circle cx="684" cy="382" r="24" fill="#D14D41" />
-
-    <circle cx="512" cy="512" r="68" fill="#FFFCF0" />
-    <circle cx="512" cy="512" r="40" fill="#4385BE" />
-  </g>
+  <!-- A compact navigation marker completes the map read. -->
+  <path
+    d="M724 620 L648 800 L726 763 L803 806 Z"
+    fill="#FFFCF0"
+    stroke="#100F0F"
+    stroke-linejoin="round"
+    stroke-width="20"
+  />
 </svg>

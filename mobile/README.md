@@ -1,6 +1,6 @@
-# Lystic Radar mobile
+# Anvil mobile
 
-Flutter iOS/Android client for the live-only Lystic Radar service. It uses
+Flutter iOS/Android client for the live-only Anvil service. It uses
 MapLibre, shows current NEXRAD raster tiles and NWS alert polygons, and can keep
 the map centered on the device without changing the user's zoom.
 

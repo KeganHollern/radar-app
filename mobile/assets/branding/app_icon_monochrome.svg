@@ -1,23 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <path
-    d="M512 195 a317 317 0 1 0 0 634 a317 317 0 1 0 0 -634 Z M512 229 a283 283 0 1 0 0 566 a283 283 0 1 0 0 -566 Z"
-    fill="#FFFFFF"
-    fill-rule="evenodd"
-  />
-  <path
-    d="M512 290 a222 222 0 1 0 0 444 a222 222 0 1 0 0 -444 Z M512 322 a190 190 0 1 0 0 380 a190 190 0 1 0 0 -380 Z"
-    fill="#FFFFFF"
-    fill-rule="evenodd"
-  />
-  <path
-    d="M512 384 a128 128 0 1 0 0 256 a128 128 0 1 0 0 -256 Z M512 416 a96 96 0 1 0 0 192 a96 96 0 1 0 0 -192 Z"
-    fill="#FFFFFF"
-    fill-rule="evenodd"
-  />
-  <path
-    d="M496 496 L731 258 Q747 242 763 258 Q779 274 763 290 L528 528 Z"
+    d="M164 258 C210 188 305 170 382 210 C437 238 474 286 536 292 C616 300 652 342 702 389 C758 442 842 459 864 538 C884 610 829 677 752 688 C679 699 634 647 570 632 C495 615 463 554 398 539 C320 521 270 469 217 436 C153 396 127 317 164 258 Z"
     fill="#FFFFFF"
   />
-  <circle cx="512" cy="512" r="68" fill="#FFFFFF" />
+  <path d="M132 750 C286 679 410 660 514 555 C626 441 711 323 884 252" fill="none" stroke="#FFFFFF" stroke-width="30" />
+  <path d="M128 580 C256 608 372 564 483 590 C604 618 724 568 892 618" fill="none" stroke="#FFFFFF" stroke-width="22" />
+  <path d="M724 620 L648 800 L726 763 L803 806 Z" fill="#FFFFFF" />
 </svg>

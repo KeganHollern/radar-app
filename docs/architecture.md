@@ -1,8 +1,8 @@
-# Lystic Radar architecture
+# Anvil architecture
 
 ## Product boundary
 
-Lystic Radar is a dark, map-first Flutter application backed by a Go API at
+Anvil is a dark, map-first Flutter application backed by a Go API at
 `https://radar.lystic.dev`. It shows only the newest observation available. It
 does not expose forecasts, animation, historical scans, or a time selector.
 
