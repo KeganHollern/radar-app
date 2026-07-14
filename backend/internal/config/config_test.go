@@ -3,6 +3,7 @@ package config
 import "testing"
 
 func TestLoadDefaults(t *testing.T) {
+	t.Setenv("RADAR_AGGREGATE_TOKEN_KEY", "0123456789abcdef0123456789abcdef")
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -13,8 +14,16 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidLayers(t *testing.T) {
+	t.Setenv("RADAR_AGGREGATE_TOKEN_KEY", "0123456789abcdef0123456789abcdef")
 	t.Setenv("RADAR_REFLECTIVITY_LAYERS", "0.5:sr_bref,1.5:../../secret")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid layer error")
+	}
+}
+
+func TestLoadRequiresStrongAggregateTokenKey(t *testing.T) {
+	t.Setenv("RADAR_AGGREGATE_TOKEN_KEY", "too-short")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected short aggregate token key to be rejected")
 	}
 }

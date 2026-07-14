@@ -53,8 +53,12 @@ regional mosaic always remains the fallback.
 
 This high-zoom overlay is a presentation detail tier, not a different mode or a
 history feature. It remains anchored to the aggregate generation in the tile
-URL, and recently observed aggregate generations are retained briefly so both
-API replicas can finish an in-flight map consistently across a scan rollover.
+URL. The tile template carries a fixed-format, HMAC-signed snapshot of the five
+ordered component times and missing mask, bound to the existing opaque version.
+Any replica with the shared signing key can therefore reconstruct the exact WMS
+times without pod-local history or a per-tile metadata lookup. Brief in-memory
+history remains only as a mixed-rollout fallback for older URLs without the
+snapshot parameter.
 
 The production alternative is to ingest the current MRMS GRIB2 artifact directly,
 for example `MRMS_ReflectivityAtLowestAltitude.latest.grib2.gz`, render immutable
@@ -263,6 +267,9 @@ upstream URLs or accept an unrestricted WMS query string from clients.
 - Require and validate the aggregate or station generation on every radar tile,
   and pin every upstream WMS `TIME`; never resolve `latest` independently for an
   individual tile.
+- Reject malformed or invalid aggregate signatures before any upstream request.
+  Keep the signing key in a shared Kubernetes Secret, never in a ConfigMap or
+  image, and bind the signature to the product and opaque generation hash.
 - Coalesce concurrent cache misses so hundreds of clients do not create hundreds
   of identical upstream WMS requests.
 - Surface `observedAt`, `receivedAt`, `ageSeconds`, and `stale` in manifests.

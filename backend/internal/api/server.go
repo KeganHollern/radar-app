@@ -170,7 +170,15 @@ func (s *Server) tile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selection := radar.Selection{Product: r.PathValue("product"), Station: r.PathValue("station"), Elevation: r.PathValue("elevation")}
-	result, err := s.radar.Tile(r.Context(), selection, r.URL.Query().Get("timestamp"), z, x, y)
+	result, err := s.radar.Tile(
+		r.Context(),
+		selection,
+		r.URL.Query().Get("timestamp"),
+		r.URL.Query().Get("snapshot"),
+		z,
+		x,
+		y,
+	)
 	if err != nil {
 		if errors.Is(err, radar.ErrInvalidGeneration) {
 			writeError(w, http.StatusBadRequest, "invalid_generation", err.Error())

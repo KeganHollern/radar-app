@@ -7,6 +7,7 @@ endpoint.
 ## Run
 
 ```sh
+export RADAR_AGGREGATE_TOKEN_KEY="local-development-key-change-me-32chars"
 go run ./cmd/radar-api
 ```
 
@@ -22,7 +23,7 @@ to `https://radar.lystic.dev`.
 - `GET /api/v1/alerts[?point=lat,lon|area=TX|region=AL]` — active NWS alert GeoJSON
 - `GET /api/v1/radar/latest?product=aggregate` — current observation manifest
 - `GET /api/v1/radar/latest?product=reflectivity&station=KFWS&elevation=0.5`
-- `GET /api/v1/radar/tiles/{product}/{station}/{elevation}/{z}/{x}/{y}.png?timestamp={version}`
+- `GET /api/v1/radar/tiles/{product}/{station}/{elevation}/{z}/{x}/{y}.png?timestamp={version}[&snapshot={signed-aggregate}]`
 - `GET /api/v1/updates` — SSE refresh events; accepts the same selection query as `latest`
 
 For aggregate tiles use `aggregate/conus/0.5`; the service normalizes the station
@@ -31,14 +32,22 @@ Hawaii, Caribbean/Puerto Rico, and Guam RIDGE II layers. The aggregate manifest
 includes per-region timestamps, uses the oldest available component for its
 overall age, and derives its generation from every regional timestamp.
 
-The aggregate `timestamp` is required. Each regional WMS request is pinned to
-the exact observation encoded by that generation. Zoom 7 and above selects the
-tile's local US radar region; national zooms 0-6 fetch and composite all
-available regions at their individual observation times. Recently observed
-aggregate generations are retained for 15 minutes so requests split between
-Kubernetes replicas during a rollover keep rendering the same pixels. Unknown
-or expired generations are rejected instead of serving current data under an
-old URL.
+The aggregate `timestamp` is required. Its tile template also carries a compact,
+HMAC-signed `snapshot` containing the five ordered regional observation times
+and missing-region mask. Any replica sharing `RADAR_AGGREGATE_TOKEN_KEY` can
+reconstruct the exact generation without relying on pod-local history or doing
+a metadata request per tile. The existing 24-character timestamp remains in the
+URL and is cryptographically bound to the snapshot for rolling-deployment and
+old-client compatibility. Malformed, tampered, and future snapshots are rejected
+before upstream work. An expired snapshot remains valid only when an exact
+current or recently remembered component set confirms a prolonged unchanged
+generation; otherwise it is rejected after rollover.
+
+Each regional WMS request is pinned to the exact observation encoded by that
+generation. Zoom 7 and above selects the tile's local US radar region; national
+zooms 0-6 fetch and composite all available regions at their individual
+observation times. Unknown generations are rejected instead of serving current
+data under an old URL.
 
 At zoom 9 and above, the aggregate view optionally overlays the nearest
 covering station's 0.5-degree super-resolution reflectivity scan. The station
@@ -83,6 +92,7 @@ alert polygons are not simplified.
 | `RADAR_LISTEN_ADDR` | `:8080` |
 | `RADAR_PUBLIC_BASE_URL` | `https://radar.lystic.dev` |
 | `RADAR_USER_AGENT` | contact-bearing Radar user agent |
+| `RADAR_AGGREGATE_TOKEN_KEY` | required shared secret, at least 32 characters |
 | `RADAR_ALLOWED_ORIGINS` | `*` |
 | `RADAR_UPSTREAM_TIMEOUT` | `8s` |
 | `RADAR_ALERT_TTL` | `30s` |
@@ -103,6 +113,21 @@ alert polygons are not simplified.
 
 Provider roots are overrideable for testing with `RADAR_NWS_BASE_URL`,
 `RADAR_WMS_BASE_URL`, and `RADAR_STATIONS_URL`.
+
+For Kubernetes, create the signing key before starting the new API image:
+
+```sh
+kubectl create secret generic radar-api-generation \
+  --from-literal=aggregate-token-key="$(openssl rand -base64 48)"
+```
+
+Keep this Secret stable across every replica and deployment. For the first
+rollout, create the Secret and apply the Deployment's `secretKeyRef` while the
+old image is still running, wait for all old-image pods to become ready, and
+only then publish/deploy the new image. The old binary safely ignores the extra
+environment variable and `snapshot` query parameter; publishing the new image
+before the Secret exists makes the intentionally fail-closed process reject its
+configuration and restart.
 
 `RADAR_REFLECTIVITY_LAYERS` and `RADAR_VELOCITY_LAYERS` are comma-separated
 `elevation:WMS_suffix` mappings. Defaults are `0.5:sr_bref` and `0.5:sr_bvel`.

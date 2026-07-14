@@ -59,6 +59,33 @@ void main() {
     api.close();
   });
 
+  test('aggregate snapshot query survives mobile cache-busting', () {
+    const version = '0123456789abcdef01234567';
+    final token =
+        '${List.filled(76, 'A').join()}.${List.filled(22, 'B').join()}';
+    final api = RadarApi(baseUrl: 'https://radar.lystic.dev');
+    final snapshot = RadarSnapshot(
+      observedAt: DateTime.utc(2026, 7, 12),
+      version: version,
+      tileTemplate:
+          'https://radar.lystic.dev/api/v1/radar/tiles/aggregate/conus/'
+          '0.5/{z}/{x}/{y}.png?timestamp=$version&snapshot=$token',
+    );
+
+    final result = api.tileTemplate(
+      mode: RadarMode.aggregate,
+      snapshot: snapshot,
+    );
+    final parsed = Uri.parse(result);
+
+    expect(parsed.queryParameters['timestamp'], version);
+    expect(parsed.queryParameters['snapshot'], token);
+    expect(parsed.queryParameters['v'], version);
+    expect(result, contains('/{z}/{x}/{y}.png'));
+    expect(result.length, lessThan(512));
+    api.close();
+  });
+
   test('backend error envelopes expose their readable message', () async {
     final api = RadarApi(
       baseUrl: 'https://radar.lystic.dev',

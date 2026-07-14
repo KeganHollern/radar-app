@@ -173,7 +173,7 @@ func TestStationTilePinsRequestedGeneration(t *testing.T) {
 	selection := Selection{Product: "velocity", Station: "KGRK", Elevation: "0.5"}
 	generation := strconv.FormatInt(older.UnixMilli(), 10)
 
-	if _, err := service.Tile(context.Background(), selection, generation, 0, 0, 0); err != nil {
+	if _, err := service.Tile(context.Background(), selection, generation, "", 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-times; got != "kgrk_sr_bvel="+older.Format(time.RFC3339) {
@@ -184,7 +184,7 @@ func TestStationTilePinsRequestedGeneration(t *testing.T) {
 	// manifest generation must still select exactly the same scan.
 	latestMilliseconds.Store(advanced.UnixMilli())
 	service = newService()
-	if _, err := service.Tile(context.Background(), selection, generation, 1, 1, 1); err != nil {
+	if _, err := service.Tile(context.Background(), selection, generation, "", 1, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-times; got != "kgrk_sr_bvel="+older.Format(time.RFC3339) {
@@ -199,19 +199,19 @@ func TestStationTilePinsRequestedGeneration(t *testing.T) {
 
 	unavailable := older.Add(time.Minute)
 	callsBeforeUnavailable := capabilityCalls.Load()
-	if _, err := service.Tile(context.Background(), selection, strconv.FormatInt(unavailable.UnixMilli(), 10), 0, 0, 0); !errors.Is(err, ErrInvalidGeneration) {
+	if _, err := service.Tile(context.Background(), selection, strconv.FormatInt(unavailable.UnixMilli(), 10), "", 0, 0, 0); !errors.Is(err, ErrInvalidGeneration) {
 		t.Fatalf("unavailable generation error = %v", err)
 	}
 	if got := capabilityCalls.Load(); got != callsBeforeUnavailable {
 		t.Fatalf("older unlisted generation caused capabilities refresh: calls %d -> %d", callsBeforeUnavailable, got)
 	}
-	if _, err := service.Tile(context.Background(), selection, "", 0, 0, 0); !errors.Is(err, ErrInvalidGeneration) {
+	if _, err := service.Tile(context.Background(), selection, "", "", 0, 0, 0); !errors.Is(err, ErrInvalidGeneration) {
 		t.Fatalf("missing generation error = %v", err)
 	}
 
 	latestMilliseconds.Store(older.Add(20 * time.Minute).UnixMilli())
 	service = newService()
-	if _, err := service.Tile(context.Background(), selection, generation, 0, 0, 0); !errors.Is(err, ErrInvalidGeneration) {
+	if _, err := service.Tile(context.Background(), selection, generation, "", 0, 0, 0); !errors.Is(err, ErrInvalidGeneration) {
 		t.Fatalf("expired generation error = %v", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestStationTileRefreshesCapabilitiesWhenReplicaCacheIsBehind(t *testing.T) 
 	// has T0 in its fresh 15-second capabilities cache.
 	upstreamLatest.Store(second.UnixMilli())
 	generation := strconv.FormatInt(second.UnixMilli(), 10)
-	if _, err := service.Tile(context.Background(), selection, generation, 1, 1, 1); err != nil {
+	if _, err := service.Tile(context.Background(), selection, generation, "", 1, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-requestedTime; got != second.Format(time.RFC3339) {

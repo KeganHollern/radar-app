@@ -80,6 +80,14 @@ spec:
         - name: radar-api
           image: ghcr.io/keganhollern/radar-app:latest
           imagePullPolicy: Always
+          env:
+            # Precreate radar-api-generation before applying this pod template.
+            # Every replica must share the same stable signing key.
+            - name: RADAR_AGGREGATE_TOKEN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: radar-api-generation
+                  key: aggregate-token-key
           envFrom:
             - configMapRef:
                 name: radar-api

@@ -34,19 +34,20 @@ type Selection struct {
 }
 
 type Latest struct {
-	Product        string                     `json:"product"`
-	Station        string                     `json:"station"`
-	Elevation      string                     `json:"elevation"`
-	ObservedAt     time.Time                  `json:"observedAt"`
-	CheckedAt      time.Time                  `json:"checkedAt"`
-	ReceivedAt     time.Time                  `json:"receivedAt"`
-	AgeSeconds     int64                      `json:"ageSeconds"`
-	Stale          bool                       `json:"stale"`
-	Version        string                     `json:"version"`
-	TileTemplate   string                     `json:"tileTemplate"`
-	Source         string                     `json:"source"`
-	Components     map[string]LatestComponent `json:"components,omitempty"`
-	MissingRegions []string                   `json:"missingRegions,omitempty"`
+	Product         string                     `json:"product"`
+	Station         string                     `json:"station"`
+	Elevation       string                     `json:"elevation"`
+	ObservedAt      time.Time                  `json:"observedAt"`
+	CheckedAt       time.Time                  `json:"checkedAt"`
+	ReceivedAt      time.Time                  `json:"receivedAt"`
+	AgeSeconds      int64                      `json:"ageSeconds"`
+	Stale           bool                       `json:"stale"`
+	Version         string                     `json:"version"`
+	GenerationToken string                     `json:"generationToken,omitempty"`
+	TileTemplate    string                     `json:"tileTemplate"`
+	Source          string                     `json:"source"`
+	Components      map[string]LatestComponent `json:"components,omitempty"`
+	MissingRegions  []string                   `json:"missingRegions,omitempty"`
 }
 
 type LatestComponent struct {
@@ -122,7 +123,7 @@ func (s *Service) Normalize(selection Selection) (Selection, error) {
 	}
 }
 
-func (s *Service) Tile(ctx context.Context, selection Selection, generation string, z, x, y int) (upstream.Result, error) {
+func (s *Service) Tile(ctx context.Context, selection Selection, generation, aggregateSnapshot string, z, x, y int) (upstream.Result, error) {
 	selection, err := s.Normalize(selection)
 	if err != nil {
 		return upstream.Result{}, err
@@ -131,6 +132,32 @@ func (s *Service) Tile(ctx context.Context, selection Selection, generation stri
 		return upstream.Result{}, err
 	}
 	if selection.Product == "aggregate" {
+		if !validAggregateVersion(generation) || generation != strings.TrimSpace(generation) {
+			return upstream.Result{}, fmt.Errorf("%w: aggregate generation is unavailable; refresh latest radar metadata", ErrInvalidGeneration)
+		}
+		if aggregateSnapshot != "" {
+			decoded, err := decodeAggregateSnapshot(aggregateSnapshot, generation, s.config.AggregateTokenKey, time.Now().UTC())
+			if err != nil {
+				return upstream.Result{}, fmt.Errorf("%w: %v", ErrInvalidGeneration, err)
+			}
+			if !decoded.expired {
+				return s.aggregateTile(ctx, selection, decoded.latest, z, x, y)
+			}
+
+			// A generation can legitimately remain current beyond the normal
+			// handoff window during a provider pause. Recheck only this uncommon
+			// expired-token path and require an exact component match.
+			latest, err := s.aggregateLatest(ctx, selection)
+			if err != nil {
+				return upstream.Result{}, err
+			}
+			resolved, ok := s.resolveAggregateGeneration(generation, latest)
+			if !ok || !sameAggregateComponents(decoded.latest, resolved) {
+				return upstream.Result{}, fmt.Errorf("%w: aggregate generation is unavailable; refresh latest radar metadata", ErrInvalidGeneration)
+			}
+			return s.aggregateTile(ctx, selection, decoded.latest, z, x, y)
+		}
+
 		latest, err := s.aggregateLatest(ctx, selection)
 		if err != nil {
 			return upstream.Result{}, err
@@ -138,9 +165,6 @@ func (s *Service) Tile(ctx context.Context, selection Selection, generation stri
 		// Aggregate versions encode all regional observation anchors. Retain
 		// recently observed manifests across a rollover so parallel requests split
 		// between replicas still render the exact generation in their tile URL.
-		if generation == "" || generation != strings.TrimSpace(generation) {
-			return upstream.Result{}, fmt.Errorf("%w: aggregate generation is unavailable; refresh latest radar metadata", ErrInvalidGeneration)
-		}
 		resolved, ok := s.resolveAggregateGeneration(generation, latest)
 		if !ok {
 			return upstream.Result{}, fmt.Errorf("%w: aggregate generation is unavailable; refresh latest radar metadata", ErrInvalidGeneration)
@@ -376,6 +400,12 @@ func (s *Service) aggregateLatest(ctx context.Context, selection Selection) (Lat
 	manifest.Stale = manifest.Stale || stale
 	manifest.Components = components
 	manifest.MissingRegions = missing
+	snapshot, err := encodeAggregateSnapshot(manifest, s.config.AggregateTokenKey)
+	if err != nil {
+		return Latest{}, fmt.Errorf("encode aggregate generation: %w", err)
+	}
+	manifest.GenerationToken = snapshot
+	manifest.TileTemplate += "&snapshot=" + url.QueryEscape(snapshot)
 	s.rememberAggregateGeneration(manifest)
 	return manifest, nil
 }

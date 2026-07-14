@@ -81,6 +81,39 @@ func TestStationTileRequiresGeneration(t *testing.T) {
 	}
 }
 
+func TestAggregateTileRejectsInvalidSignedSnapshot(t *testing.T) {
+	c := config.Config{
+		UserAgent:         "radar-test",
+		AggregateTokenKey: "0123456789abcdef0123456789abcdef",
+		UpstreamTimeout:   time.Second,
+		StaleTTL:          time.Minute,
+		CacheMaxEntries:   8,
+		CacheMaxBytes:     1 << 20,
+		MaxUpstreamBytes:  1 << 20,
+		TileMaxZoom:       16,
+		Reflectivity:      map[string]string{"0.5": "sr_bref"},
+		Velocity:          map[string]string{"0.5": "sr_bvel"},
+	}
+	server := New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/radar/tiles/aggregate/conus/0.5/8/58/105.png?timestamp=aaaaaaaaaaaaaaaaaaaaaaaa&snapshot=tampered",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", response.Code, response.Body.String())
+	}
+	var body map[string]map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"]["code"] != "invalid_generation" {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
 func TestNormalizeStationsAddsCapabilitiesAndDeduplicates(t *testing.T) {
 	input := []byte(`{"type":"FeatureCollection","features":[
 		{"type":"Feature","geometry":{"type":"Point","coordinates":[-97,32]},"properties":{"rda_id":"KFWS","name":"Fort Worth","wfo_id":"FWD","elevmeter":200}},

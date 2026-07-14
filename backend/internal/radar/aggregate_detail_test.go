@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -760,6 +761,7 @@ func TestAggregateTileURLRejectsDifferentGenerationAcrossReplicas(t *testing.T) 
 		context.Background(),
 		selection,
 		firstGeneration,
+		"",
 		8,
 		58,
 		105,
@@ -776,6 +778,7 @@ func TestAggregateTileURLRejectsDifferentGenerationAcrossReplicas(t *testing.T) 
 		context.Background(),
 		selection,
 		firstGeneration,
+		"",
 		8,
 		58,
 		105,
@@ -785,6 +788,254 @@ func TestAggregateTileURLRejectsDifferentGenerationAcrossReplicas(t *testing.T) 
 	}
 	if mapCalls.Load() != 1 {
 		t.Fatalf("aggregate GetMap calls = %d, want no current bytes under old URL", mapCalls.Load())
+	}
+}
+
+func TestAggregateSignedSnapshotResolvesColdReplicaWithoutMetadataRefresh(t *testing.T) {
+	firstObservation := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Minute)
+	secondObservation := firstObservation.Add(time.Minute)
+	firstPNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
+	secondPNG := solidRadarPNG(t, color.NRGBA{R: 0xff, A: 0xff})
+	var rolledOver atomic.Bool
+	var capabilityCalls atomic.Int32
+	var mu sync.Mutex
+	var mapTimes []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.ToLower(r.URL.Query().Get("request")) {
+		case "getcapabilities":
+			capabilityCalls.Add(1)
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if len(parts) != 3 {
+				http.Error(w, "unexpected capabilities endpoint", http.StatusBadRequest)
+				return
+			}
+			observedAt := firstObservation
+			if rolledOver.Load() {
+				observedAt = secondObservation
+			}
+			writeRadarCapability(w, parts[1], observedAt, firstObservation, observedAt)
+		case "getmap":
+			requestedAt := r.URL.Query().Get("time")
+			mu.Lock()
+			mapTimes = append(mapTimes, r.URL.Query().Get("layers")+"="+requestedAt)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "image/png")
+			if requestedAt == firstObservation.Format(time.RFC3339) {
+				_, _ = w.Write(firstPNG)
+			} else {
+				_, _ = w.Write(secondPNG)
+			}
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	podA := newAggregateDetailTestService(server)
+	firstLatest, err := podA.Latest(context.Background(), Selection{Product: "aggregate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstLatest.GenerationToken == "" {
+		t.Fatal("aggregate latest omitted signed generation token")
+	}
+	template, err := url.Parse(firstLatest.TileTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if template.Query().Get("timestamp") != firstLatest.Version ||
+		template.Query().Get("snapshot") != firstLatest.GenerationToken {
+		t.Fatalf("aggregate tile template query = %q", template.RawQuery)
+	}
+	withMobileVersion, err := url.Parse(firstLatest.TileTemplate + "&v=" + firstLatest.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withMobileVersion.Query().Get("snapshot") != firstLatest.GenerationToken ||
+		len(withMobileVersion.String()) >= 512 {
+		t.Fatalf("mobile tile URL lost snapshot or exceeded bound: %s", withMobileVersion)
+	}
+
+	rolledOver.Store(true)
+	podB := newAggregateDetailTestService(server)
+	// This reproduces the deployed failure: a cold second replica has never
+	// remembered the opaque generation minted by pod A.
+	_, err = podB.Tile(
+		context.Background(),
+		Selection{Product: "aggregate"},
+		firstLatest.Version,
+		"",
+		0,
+		0,
+		0,
+	)
+	if !errors.Is(err, ErrInvalidGeneration) {
+		t.Fatalf("legacy cross-replica request error = %v, want invalid generation", err)
+	}
+	callsAfterLegacyFailure := capabilityCalls.Load()
+	if callsAfterLegacyFailure != int32(len(aggregateRegions)*2) {
+		t.Fatalf("capability calls after two manifests = %d", callsAfterLegacyFailure)
+	}
+
+	result, err := podB.Tile(
+		context.Background(),
+		Selection{Product: "aggregate"},
+		firstLatest.Version,
+		firstLatest.GenerationToken,
+		0,
+		0,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capabilityCalls.Load() != callsAfterLegacyFailure {
+		t.Fatalf("signed snapshot triggered metadata lookup: %d -> %d", callsAfterLegacyFailure, capabilityCalls.Load())
+	}
+	rendered, err := png.Decode(bytes.NewReader(result.Value.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := color.NRGBAModel.Convert(rendered.At(0, 0)).(color.NRGBA); got != (color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff}) {
+		t.Fatalf("cross-replica tile pixel = %#v, want old-generation bytes", got)
+	}
+	mu.Lock()
+	gotMapTimes := append([]string(nil), mapTimes...)
+	mu.Unlock()
+	if len(gotMapTimes) != len(aggregateRegions) {
+		t.Fatalf("signed national maps = %#v", gotMapTimes)
+	}
+	wantTime := firstObservation.Format(time.RFC3339)
+	for _, requested := range gotMapTimes {
+		if !strings.HasSuffix(requested, "="+wantTime) {
+			t.Fatalf("signed national map = %q, want exact old time %q", requested, wantTime)
+		}
+	}
+	tampered := firstLatest.GenerationToken[:len(firstLatest.GenerationToken)-1] + "A"
+	if strings.HasSuffix(firstLatest.GenerationToken, "A") {
+		tampered = firstLatest.GenerationToken[:len(firstLatest.GenerationToken)-1] + "B"
+	}
+	_, err = newAggregateDetailTestService(server).Tile(
+		context.Background(),
+		Selection{Product: "aggregate"},
+		firstLatest.Version,
+		tampered,
+		0,
+		0,
+		0,
+	)
+	if !errors.Is(err, ErrInvalidGeneration) {
+		t.Fatalf("tampered cross-replica snapshot error = %v", err)
+	}
+	if capabilityCalls.Load() != callsAfterLegacyFailure {
+		t.Fatalf("tampered snapshot triggered metadata lookup")
+	}
+	mu.Lock()
+	mapCount := len(mapTimes)
+	mu.Unlock()
+	if mapCount != len(aggregateRegions) {
+		t.Fatalf("tampered snapshot triggered GetMap; count = %d", mapCount)
+	}
+}
+
+func TestAggregateSignedSnapshotExpiredCurrentFallbackAndReplayRejection(t *testing.T) {
+	oldObservation := time.Now().UTC().Truncate(time.Second).Add(-tileGenerationGrace - time.Minute)
+	currentObservation := time.Now().UTC().Truncate(time.Second)
+	tilePNG := solidRadarPNG(t, color.NRGBA{R: 0x20, G: 0x21, B: 0x20, A: 0xff})
+	var advanced atomic.Bool
+	var mapCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.ToLower(r.URL.Query().Get("request")) {
+		case "getcapabilities":
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if len(parts) != 3 {
+				http.Error(w, "unexpected capabilities endpoint", http.StatusBadRequest)
+				return
+			}
+			observedAt := oldObservation
+			if advanced.Load() {
+				observedAt = currentObservation
+			}
+			writeRadarCapability(w, parts[1], observedAt, observedAt)
+		case "getmap":
+			mapCalls.Add(1)
+			if got := r.URL.Query().Get("time"); got != oldObservation.Format(time.RFC3339) {
+				t.Errorf("expired current generation map time = %q", got)
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(tilePNG)
+		default:
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	issuer := newAggregateDetailTestService(server)
+	oldLatest, err := issuer.Latest(context.Background(), Selection{Product: "aggregate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentPod := newAggregateDetailTestService(server)
+	if _, err := currentPod.Tile(
+		context.Background(),
+		Selection{Product: "aggregate"},
+		oldLatest.Version,
+		oldLatest.GenerationToken,
+		8,
+		58,
+		105,
+	); err != nil {
+		t.Fatalf("expired but unchanged generation: %v", err)
+	}
+	if mapCalls.Load() != 1 {
+		t.Fatalf("expired current map calls = %d, want 1", mapCalls.Load())
+	}
+
+	advanced.Store(true)
+	coldAdvancedPod := newAggregateDetailTestService(server)
+	_, err = coldAdvancedPod.Tile(
+		context.Background(),
+		Selection{Product: "aggregate"},
+		oldLatest.Version,
+		oldLatest.GenerationToken,
+		8,
+		58,
+		105,
+	)
+	if !errors.Is(err, ErrInvalidGeneration) {
+		t.Fatalf("expired replay after rollover error = %v, want invalid generation", err)
+	}
+	if mapCalls.Load() != 1 {
+		t.Fatalf("expired replay fetched WMS tile; calls = %d", mapCalls.Load())
+	}
+}
+
+func TestAggregateInvalidSignedSnapshotsDoNotTouchUpstream(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "must not be reached", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	service := newAggregateDetailTestService(server)
+	generation := strings.Repeat("a", 24)
+	for index := 0; index < 32; index++ {
+		_, err := service.Tile(
+			context.Background(),
+			Selection{Product: "aggregate"},
+			generation,
+			fmt.Sprintf("invalid-%d", index),
+			8,
+			58,
+			105,
+		)
+		if !errors.Is(err, ErrInvalidGeneration) {
+			t.Fatalf("invalid token %d error = %v", index, err)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid signed snapshots triggered %d upstream calls", calls.Load())
 	}
 }
 
@@ -856,6 +1107,7 @@ func TestAggregateTileRetainsKnownGenerationAcrossWarmReplicaRollover(t *testing
 		context.Background(),
 		Selection{Product: "aggregate"},
 		firstLatest.Version,
+		"",
 		9,
 		116,
 		210,
@@ -886,6 +1138,7 @@ func TestAggregateTileRetainsKnownGenerationAcrossWarmReplicaRollover(t *testing
 		context.Background(),
 		Selection{Product: "aggregate"},
 		firstLatest.Version,
+		"",
 		8,
 		58,
 		105,
@@ -907,6 +1160,7 @@ func TestAggregateTileRetainsKnownGenerationAcrossWarmReplicaRollover(t *testing
 		context.Background(),
 		Selection{Product: "aggregate"},
 		strings.Repeat("f", 24),
+		"",
 		9,
 		116,
 		210,
@@ -1007,15 +1261,16 @@ func slippyTileForLocation(z int, latitude, longitude float64) (int, int) {
 
 func newAggregateDetailTestService(server *httptest.Server) *Service {
 	c := config.Config{
-		RadarBaseURL:    server.URL,
-		StationsURL:     server.URL + "/stations",
-		StationTTL:      time.Hour,
-		MetadataTTL:     time.Minute,
-		TileTTL:         time.Minute,
-		RadarStaleAfter: time.Hour,
-		TileMaxZoom:     16,
-		Reflectivity:    map[string]string{"0.5": "sr_bref"},
-		Velocity:        map[string]string{"0.5": "sr_bvel"},
+		RadarBaseURL:      server.URL,
+		AggregateTokenKey: "0123456789abcdef0123456789abcdef",
+		StationsURL:       server.URL + "/stations",
+		StationTTL:        time.Hour,
+		MetadataTTL:       time.Minute,
+		TileTTL:           time.Minute,
+		RadarStaleAfter:   time.Hour,
+		TileMaxZoom:       16,
+		Reflectivity:      map[string]string{"0.5": "sr_bref"},
+		Velocity:          map[string]string{"0.5": "sr_bvel"},
 	}
 	fetcher := upstream.NewFetcher(server.Client(), cache.New(128, 32<<20), "radar-test", 16<<20, time.Minute)
 	return NewService(c, fetcher)

@@ -46,6 +46,7 @@ Go 1.25 or newer is required.
 ```bash
 cd backend
 go test ./...
+export RADAR_AGGREGATE_TOKEN_KEY="local-development-key-change-me-32chars"
 go run ./cmd/radar-api
 ```
 
@@ -64,7 +65,9 @@ Useful endpoints:
 - `GET /api/v1/updates` (server-sent events)
 
 All server configuration uses the `RADAR_` environment variables documented in
-`backend/internal/config/config.go` and mirrored by the Kubernetes ConfigMap.
+`backend/internal/config/config.go`. Non-secret values are mirrored by the
+Kubernetes ConfigMap; `RADAR_AGGREGATE_TOKEN_KEY` comes from the
+`radar-api-generation` Secret.
 
 ## Run the mobile app
 
@@ -89,7 +92,9 @@ release before distributing the app.
 
 ```bash
 docker build -t radar-api .
-docker run --rm -p 8080:8080 radar-api
+docker run --rm -p 8080:8080 \
+  -e RADAR_AGGREGATE_TOKEN_KEY=local-development-key-change-me-32chars \
+  radar-api
 ```
 
 Pushes to `main` publish `ghcr.io/<owner>/<repository>:latest` and a commit tag.
