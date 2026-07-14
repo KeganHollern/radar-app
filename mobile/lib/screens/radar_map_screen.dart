@@ -6,6 +6,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 
 import '../config/app_config.dart';
 import '../controllers/radar_controller.dart';
+import '../controllers/startup_camera_focus.dart';
 import '../models/alert_selection.dart';
 import '../models/radar_models.dart';
 import '../services/location_service.dart';
@@ -32,6 +33,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
 
   late final RadarController _radar;
   final LocationService _location = LocationService();
+  final StartupCameraFocus _startupCameraFocus = StartupCameraFocus();
   MapLibreMapController? _map;
   LocationAccess _locationAccess = LocationAccess.checking;
   bool _styleLoaded = false;
@@ -81,6 +83,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   void _onMapCreated(MapLibreMapController controller) {
     _map = controller;
     controller.onFeatureTapped.add(_onFeatureTapped);
+    unawaited(_applyStartupCameraFocus());
   }
 
   void _onStyleLoaded() {
@@ -91,9 +94,41 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _renderedStationRevision = -1;
     _renderedAlertRevision = -1;
     _queueStyleSync(force: true);
+    unawaited(_applyStartupCameraFocus());
     if (_pinLocation && _locationAccess == LocationAccess.granted) {
       unawaited(_setTrackingMode(MyLocationTrackingMode.tracking));
     }
+  }
+
+  void _onUserLocationUpdated(UserLocation location) {
+    _startupCameraFocus.updateLocation(location.position);
+    unawaited(_applyStartupCameraFocus());
+  }
+
+  Future<void> _applyStartupCameraFocus() async {
+    final map = _map;
+    final target = _startupCameraFocus.takeTarget(
+      mapReady: map != null && _styleLoaded && !_pinLocation,
+    );
+    if (map == null || target == null) return;
+
+    var succeeded = false;
+    try {
+      final result = await map.animateCamera(
+        CameraUpdate.newLatLngZoom(target, StartupCameraFocus.zoom),
+        duration: const Duration(milliseconds: 700),
+      );
+      // MapLibre returns null on iOS even when the animation is accepted.
+      succeeded = result != false;
+    } catch (error) {
+      debugPrint('Unable to focus the startup location: $error');
+    } finally {
+      _startupCameraFocus.finish(succeeded: succeeded);
+    }
+  }
+
+  void _onMapPointerDown(PointerDownEvent event) {
+    _startupCameraFocus.abandon();
   }
 
   void _queueStyleSync({bool force = false}) {
@@ -312,6 +347,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       if (_locationAccess != LocationAccess.granted) return;
     }
     final next = !_pinLocation;
+    if (next) _startupCameraFocus.abandon();
     setState(() => _pinLocation = next);
     await _setTrackingMode(
       next ? MyLocationTrackingMode.tracking : MyLocationTrackingMode.none,
@@ -344,28 +380,34 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       body: Stack(
         children: [
           Positioned.fill(
-            child: MapLibreMap(
-              styleString: AppConfig.mapStyleUrl,
-              initialCameraPosition: const CameraPosition(
-                target: LatLng(39.5, -98.35),
-                zoom: 3.25,
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: _onMapPointerDown,
+              child: MapLibreMap(
+                styleString: AppConfig.mapStyleUrl,
+                initialCameraPosition: const CameraPosition(
+                  target: LatLng(39.5, -98.35),
+                  zoom: 3.25,
+                ),
+                minMaxZoomPreference: const MinMaxZoomPreference(2.5, 15),
+                onMapCreated: _onMapCreated,
+                onStyleLoadedCallback: _onStyleLoaded,
+                onUserLocationUpdated: _onUserLocationUpdated,
+                onCameraTrackingDismissed: _onTrackingDismissed,
+                onCameraIdle: _onCameraIdle,
+                myLocationEnabled: _locationAccess == LocationAccess.granted,
+                myLocationTrackingMode: MyLocationTrackingMode.none,
+                myLocationRenderMode: MyLocationRenderMode.normal,
+                trackCameraPosition: true,
+                compassEnabled: true,
+                rotateGesturesEnabled: false,
+                tiltGesturesEnabled: false,
+                logoEnabled: false,
+                attributionButtonPosition:
+                    AttributionButtonPosition.bottomRight,
+                attributionButtonMargins: const Point(16, 196),
+                foregroundLoadColor: Flexoki.black,
               ),
-              minMaxZoomPreference: const MinMaxZoomPreference(2.5, 15),
-              onMapCreated: _onMapCreated,
-              onStyleLoadedCallback: _onStyleLoaded,
-              onCameraTrackingDismissed: _onTrackingDismissed,
-              onCameraIdle: _onCameraIdle,
-              myLocationEnabled: _locationAccess == LocationAccess.granted,
-              myLocationTrackingMode: MyLocationTrackingMode.none,
-              myLocationRenderMode: MyLocationRenderMode.normal,
-              trackCameraPosition: true,
-              compassEnabled: true,
-              rotateGesturesEnabled: false,
-              tiltGesturesEnabled: false,
-              logoEnabled: false,
-              attributionButtonPosition: AttributionButtonPosition.bottomRight,
-              attributionButtonMargins: const Point(16, 196),
-              foregroundLoadColor: Flexoki.black,
             ),
           ),
           SafeArea(

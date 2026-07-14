@@ -1,8 +1,8 @@
-# Radar mobile
+# Lystic Radar mobile
 
-Flutter iOS/Android client for the live-only Radar service. It uses MapLibre,
-shows current NEXRAD raster tiles and NWS alert polygons, and can keep the map
-centered on the device without changing the user's zoom.
+Flutter iOS/Android client for the live-only Lystic Radar service. It uses
+MapLibre, shows current NEXRAD raster tiles and NWS alert polygons, and can keep
+the map centered on the device without changing the user's zoom.
 
 ## Run
 
@@ -30,6 +30,9 @@ App Transport Security exception. Production should remain HTTPS.
 
 - Location permission is requested at runtime. The native declarations live in
   `android/app/src/main/AndroidManifest.xml` and `ios/Runner/Info.plist`.
+- The first live location fix centers the startup map once at a regional zoom.
+  It does not enable follow mode, and a user gesture before the fix keeps camera
+  control with the user.
 - Test follow mode on a physical device or with a simulated route. It uses the
   native location engine and retains the current map zoom while tracking.
 - The wakelock is enabled while the app is in the foreground and released when

@@ -1,8 +1,8 @@
-# Radar architecture
+# Lystic Radar architecture
 
 ## Product boundary
 
-Radar is a dark, map-first Flutter application backed by a Go API at
+Lystic Radar is a dark, map-first Flutter application backed by a Go API at
 `https://radar.lystic.dev`. It shows only the newest observation available. It
 does not expose forecasts, animation, historical scans, or a time selector.
 
@@ -219,6 +219,9 @@ NODD Level II (phase) ┘           │                                  │
 
 The mobile app owns location permission, the location dot, map gestures, and
 pin/follow state. Location is not sent to the backend for the basic radar view.
+The first live device fix focuses the startup map once at zoom 8, unless the
+user has already interacted with the map or enabled follow. This startup focus
+does not turn on continuous tracking.
 When follow is enabled, each accepted location update recenters the map without
 changing zoom or bearing. Only the explicit pin control should disable follow;
 if panning remains enabled while pinned, the next accepted location update returns

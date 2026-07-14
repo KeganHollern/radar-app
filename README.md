@@ -1,9 +1,10 @@
-# Radar
+# Lystic Radar
 
-Radar is a live-only U.S. weather radar app designed for a glanceable driving
-view. The Flutter client renders a dark MapLibre map, the device location, active
-weather alerts, and either a multi-radar mosaic or a selected WSR-88D station.
-The Go API owns NOAA/NWS access, validation, normalization, and caching.
+Lystic Radar is a live-only U.S. weather radar app designed for a glanceable
+driving view. The Flutter client renders a dark MapLibre map, the device
+location, active weather alerts, and either a multi-radar mosaic or a selected
+WSR-88D station. The Go API owns NOAA/NWS access, validation, normalization, and
+caching.
 
 There are deliberately no forecasts, animation loops, or historical timeline.
 
@@ -20,13 +21,14 @@ There are deliberately no forecasts, animation loops, or historical timeline.
 ## What works
 
 - dark, pannable/zoomable MapLibre map with roads and place labels
-- device location dot and opt-in follow mode that keeps the current zoom
+- device location dot, one-time local startup focus, and opt-in follow mode that
+  keeps the current zoom
 - current MRMS/RIDGE aggregate reflectivity
 - tap-to-select WSR-88D stations with current reflectivity and radial velocity
 - active NWS alert polygons, persisted per-type visibility settings, overlap
   selection, event colors, and tap-through alert details
 - foreground radar and alert refresh, plus immediate manual refresh
-- foreground wake lock so the screen remains on while Radar is open
+- foreground wake lock so the screen remains on while Lystic Radar is open
 - bounded/coalesced upstream caching, stale-on-error behavior, and SSE refresh
 - non-root container, health probes, GHCR publishing, and Kubernetes manifests
 

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <path
+    d="M512 195 a317 317 0 1 0 0 634 a317 317 0 1 0 0 -634 Z M512 229 a283 283 0 1 0 0 566 a283 283 0 1 0 0 -566 Z"
+    fill="#FFFFFF"
+    fill-rule="evenodd"
+  />
+  <path
+    d="M512 290 a222 222 0 1 0 0 444 a222 222 0 1 0 0 -444 Z M512 322 a190 190 0 1 0 0 380 a190 190 0 1 0 0 -380 Z"
+    fill="#FFFFFF"
+    fill-rule="evenodd"
+  />
+  <path
+    d="M512 384 a128 128 0 1 0 0 256 a128 128 0 1 0 0 -256 Z M512 416 a96 96 0 1 0 0 192 a96 96 0 1 0 0 -192 Z"
+    fill="#FFFFFF"
+    fill-rule="evenodd"
+  />
+  <path
+    d="M496 496 L731 258 Q747 242 763 258 Q779 274 763 290 L528 528 Z"
+    fill="#FFFFFF"
+  />
+  <circle cx="512" cy="512" r="68" fill="#FFFFFF" />
+</svg>

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <clipPath id="scope">
+      <circle cx="512" cy="512" r="300" />
+    </clipPath>
+  </defs>
+
+  <circle cx="512" cy="512" r="300" fill="#1C1B1A" stroke="#403E3C" stroke-width="24" />
+
+  <g clip-path="url(#scope)">
+    <path
+      d="M512 512 L694 228 A326 326 0 0 1 820 348 Z"
+      fill="#3AA99F"
+      fill-opacity="0.26"
+    />
+    <circle cx="512" cy="512" r="206" fill="none" stroke="#3AA99F" stroke-width="28" stroke-opacity="0.9" />
+    <circle cx="512" cy="512" r="112" fill="none" stroke="#3AA99F" stroke-width="28" stroke-opacity="0.9" />
+    <path
+      d="M499 499 L734 261 Q747 247 761 261 Q775 275 761 289 L526 526 Z"
+      fill="#4385BE"
+    />
+
+    <path
+      d="M698 324 C718 296 764 294 782 322 C812 323 830 350 819 378 C827 405 804 430 775 426 C754 447 714 436 707 407 C676 398 668 355 698 324 Z"
+      fill="#DA702C"
+    />
+    <path
+      d="M741 333 C756 318 783 322 790 342 C811 350 810 380 789 389 C777 408 746 402 741 380 C722 370 723 344 741 333 Z"
+      fill="#D0A215"
+    />
+    <circle cx="684" cy="382" r="24" fill="#D14D41" />
+
+    <circle cx="512" cy="512" r="68" fill="#FFFCF0" />
+    <circle cx="512" cy="512" r="40" fill="#4385BE" />
+  </g>
+</svg>
