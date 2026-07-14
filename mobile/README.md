@@ -20,6 +20,27 @@ flutter run \
   --dart-define=MAP_STYLE_URL=https://tiles.openfreemap.org/styles/dark
 ```
 
+The default map style and credits are the OpenFreeMap dark style:
+`OpenFreeMap © OpenMapTiles Data from OpenStreetMap`. If a release changes
+`MAP_STYLE_URL`, it must also provide matching map credits so the persistent map
+attribution and its source sheet stay accurate:
+
+```sh
+--dart-define=MAP_ATTRIBUTION_COMPACT='short persistent credit' \
+--dart-define=MAP_PROVIDER_ATTRIBUTION='tile provider' \
+--dart-define=MAP_PROVIDER_ATTRIBUTION_URL='https://provider.example/' \
+--dart-define=MAP_SCHEMA_ATTRIBUTION='schema credit or empty' \
+--dart-define=MAP_SCHEMA_ATTRIBUTION_URL='https://schema.example/' \
+--dart-define=MAP_DATA_ATTRIBUTION='map data credit' \
+--dart-define=MAP_DATA_ATTRIBUTION_URL='https://data.example/license'
+```
+
+Before a mobile release, verify on physical Android and iOS devices in portrait,
+landscape, and the smallest supported screen that the persistent credit stays
+visible and opens above the native map. Confirm each provider link launches and
+TalkBack/VoiceOver exposes one attribution target that announces “map and
+weather data sources.”
+
 An Android emulator reaches a host API at `http://10.0.2.2:8080`; debug and
 profile builds allow cleartext specifically for local development, while the
 release manifest remains HTTPS-only. iOS Simulator can normally use

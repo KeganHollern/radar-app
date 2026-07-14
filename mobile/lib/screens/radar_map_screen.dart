@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_config.dart';
 import '../controllers/radar_controller.dart';
@@ -11,6 +12,7 @@ import '../models/alert_selection.dart';
 import '../models/radar_models.dart';
 import '../services/location_service.dart';
 import '../theme/flexoki_theme.dart';
+import '../widgets/map_attribution.dart';
 import '../widgets/radar_legend.dart';
 import '../widgets/settings_panel.dart';
 
@@ -405,7 +407,11 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                 logoEnabled: false,
                 attributionButtonPosition:
                     AttributionButtonPosition.bottomRight,
-                attributionButtonMargins: const Point(16, 196),
+                // maplibre_gl exposes ornament margins but no way to disable
+                // its native attribution button. Move that broken duplicate
+                // outside the viewport; the persistent Flutter credit below
+                // supplies the visible, accessible attribution interaction.
+                attributionButtonMargins: const Point(-64, -64),
                 foregroundLoadColor: Flexoki.black,
               ),
             ),
@@ -471,7 +477,18 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                       ),
                     ),
                     const SizedBox(width: 12),
-                    _PinButton(pinned: _pinLocation, onPressed: _togglePin),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        MapAttributionButton(
+                          credit: AppConfig.mapAttributionCompact,
+                          onPressed: _showMapAttribution,
+                        ),
+                        const SizedBox(height: 8),
+                        _PinButton(pinned: _pinLocation, onPressed: _togglePin),
+                      ],
+                    ),
                   ],
                 ),
               ],
@@ -522,6 +539,30 @@ class _RadarMapScreenState extends State<RadarMapScreen>
           ),
         ),
       ),
+    );
+  }
+
+  void _showMapAttribution() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => MapAttributionPanel(
+        mapAttributions: AppConfig.mapAttributions,
+        onOpenLink: _openAttributionLink,
+      ),
+    );
+  }
+
+  Future<void> _openAttributionLink(Uri uri) async {
+    var opened = false;
+    try {
+      opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (error) {
+      debugPrint('Unable to open attribution link: $error');
+    }
+    if (opened || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Unable to open the source website.')),
     );
   }
 
