@@ -50,8 +50,8 @@ entire viewport. Its super-resolution reflectivity scan is resolved once at or
 immediately before the regional observation and then used across every covered
 tile. This avoids the hard seams produced when adjacent tile groups independently
 chose different radars and scan times. The station overlay is filtered below
-15 dBZ and omitted when it is stale or unavailable. The regional mosaic always
-remains the fallback.
+15 dBZ and omitted when it is stale or unavailable. The regional mosaic uses
+the same presentation floor, then remains the fallback.
 
 This high-zoom overlay is a presentation detail tier, not a different mode or a
 history feature. While browsing, the chosen radar follows the camera center;
@@ -104,21 +104,22 @@ NWS specifically documents both public WSR-88D layers as 0.5-degree data. Do not
 manufacture elevation options by assigning the same image to multiple labels.
 The app's current manifest therefore advertises only `0.5`.
 
-Station reflectivity is intentionally less visually clean than the aggregate
-`BREF.QCD` mosaic. The WSR-88D can detect very weak returns below the level
-usually associated with measurable precipitation, and base reflectivity can
-also contain returns from insects, birds, dust, ground clutter, and anomalous
-propagation. NOAA's station legend renders those weak returns in pale gray and
-blue shades. For the app's rain-focused driving view, the API applies a
-presentation floor of approximately 15 dBZ to station reflectivity only. The
-source is a pre-colored raster, so the filter matches the official NOAA palette
-and fails open for unknown colors. This is not meteorological quality control
-and can hide boundaries, virga, very light precipitation, and biological
-returns. Aggregate reflectivity and station velocity are never filtered.
-Actual WMS no-data pixels are transparent and remain transparent through the
-tile proxy. Opaque white is also part of NOAA's palette for strong
-reflectivity, so the filter classifies the full palette rather than treating
-white as background.
+Station reflectivity is intentionally less visually clean at the source than
+the aggregate `BREF.QCD` mosaic. The WSR-88D can detect very weak returns below
+the level usually associated with measurable precipitation, and base
+reflectivity can also contain returns from insects, birds, dust, ground
+clutter, and anomalous propagation. NOAA's reflectivity legends render those
+weak returns in pale gray and blue shades. For the app's rain-focused driving
+view, the API applies one presentation floor of approximately 15 dBZ to both
+aggregate and station reflectivity. This keeps the weak regional mosaic from
+reappearing beneath a filtered station overlay when the user switches modes.
+The sources are pre-colored rasters, so the filter matches the official NOAA
+palette and fails open for unknown colors. This is not meteorological quality
+control and can hide boundaries, virga, very light precipitation, and
+biological returns. Station velocity is never filtered. Actual WMS no-data
+pixels are transparent and remain transparent through the tile proxy. Opaque
+white is also part of NOAA's palette for strong reflectivity, so the filter
+classifies the full palette rather than treating white as background.
 
 To support the requested elevation selector correctly, ingest near-real-time
 NEXRAD Level-II volumes. NCEI documents Level II as the original-resolution base

@@ -290,6 +290,13 @@ func TestAggregatePinnedDetailPreservesRegionalBaseOutsideStationCoverage(t *tes
 }
 
 func TestAggregateNationalOverviewCompositesExactRegionalGenerations(t *testing.T) {
+	preservedRegionalColors := []color.NRGBA{
+		{R: 0x54, G: 0xcf, B: 0xaa, A: 0xff}, // 16 dBZ
+		{R: 0x28, G: 0xd6, B: 0x4a, A: 0xff}, // 20 dBZ
+		{R: 0x0d, G: 0xb5, B: 0x12, A: 0xff}, // 24 dBZ
+		{R: 0xf2, G: 0xc5, B: 0x1d, A: 0xff}, // 40 dBZ
+		{R: 0xc5, G: 0x0a, B: 0x0b, A: 0xff}, // 50 dBZ
+	}
 	latest := Latest{
 		Version:    "national-generation",
 		Components: make(map[string]LatestComponent, len(aggregateRegions)),
@@ -299,7 +306,7 @@ func TestAggregateNationalOverviewCompositesExactRegionalGenerations(t *testing.
 	for index, region := range aggregateRegions {
 		observedAt := time.Date(2026, 7, 14, 2, index, 0, 0, time.UTC)
 		latest.Components[region.name] = LatestComponent{ObservedAt: observedAt}
-		value := color.NRGBA{R: uint8(30 + index*30), G: uint8(200 - index*20), B: uint8(50 + index*10), A: 0xff}
+		value := preservedRegionalColors[index]
 		regionColors[region.name] = value
 		source := image.NewNRGBA(image.Rect(0, 0, 256, 256))
 		source.SetNRGBA(index, 0, value)

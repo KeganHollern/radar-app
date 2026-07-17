@@ -13,22 +13,17 @@ class RadarLegend extends StatelessWidget {
   final RadarMode mode;
 
   bool get _isVelocity => mode == RadarMode.stationVelocity;
-  bool get _isDeclutteredReflectivity => mode == RadarMode.stationReflectivity;
 
   @override
   Widget build(BuildContext context) {
     final palette = _isVelocity
         ? _velocityPalette
-        : _isDeclutteredReflectivity
-        ? _stationReflectivityPalette
-        : _reflectivityPalette;
+        : _declutteredReflectivityPalette;
     return Semantics(
       container: true,
       label: _isVelocity
           ? 'Radial velocity color scale in knots. Negative values mean motion toward the radar, zero is in the center, and positive values mean motion away from the radar. The separate RF swatch means range-folded or unresolved data, not a velocity value.'
-          : _isDeclutteredReflectivity
-          ? 'Station reflectivity color scale in dBZ, from light echoes to intense echoes. Weak returns below 15 dBZ are hidden.'
-          : 'Reflectivity color scale in dBZ, from light echoes to intense echoes.',
+          : 'Reflectivity color scale in dBZ, from light echoes to intense echoes. Weak returns below 15 dBZ are hidden.',
       child: ExcludeSemantics(
         child: Container(
           padding: const EdgeInsets.fromLTRB(10, 7, 10, 6),
@@ -62,9 +57,7 @@ class RadarLegend extends StatelessWidget {
                   Text(
                     _isVelocity
                         ? 'knots · RF = unresolved'
-                        : _isDeclutteredReflectivity
-                        ? 'dBZ · <15 hidden'
-                        : 'dBZ',
+                        : 'dBZ · <15 hidden',
                     style: const TextStyle(
                       color: Flexoki.base500,
                       fontSize: 10,
@@ -133,13 +126,9 @@ class RadarLegend extends StatelessWidget {
                       )
                     : Row(
                         children: [
-                          Text(
-                            _isDeclutteredReflectivity
-                                ? '15 · light'
-                                : '-20 · weak',
-                          ),
+                          const Text('15 · light'),
                           const Spacer(),
-                          Text(_isDeclutteredReflectivity ? '40' : '30'),
+                          const Text('40'),
                           const Spacer(),
                           const Text('70 · intense'),
                         ],
@@ -153,26 +142,10 @@ class RadarLegend extends StatelessWidget {
   }
 }
 
-// Sampled from the NOAA/NWS RIDGE BREF.QCD and SR_BREF WMS legends. The weak
-// end includes gray/pale tones before blue, then transitions through green,
-// yellow, red, magenta, and violet as dBZ increases.
-const _reflectivityPalette = <Color>[
-  Color(0xFF8D817F),
-  Color(0xFFB2B284),
-  Color(0xFFAFB5B4),
-  Color(0xFF6275A7),
-  Color(0xFF5DADCE),
-  Color(0xFF0ED413),
-  Color(0xFF0D6008),
-  Color(0xFFEAB32D),
-  Color(0xFFA20F10),
-  Color(0xFFE374FC),
-  Color(0xFF5A00D3),
-];
-
-// Station tiles are decluttered below 15 dBZ by the API. Start their key at
-// NOAA's 15 dBZ cyan-green transition so hidden colors are not advertised.
-const _stationReflectivityPalette = <Color>[
+// Nearby and station reflectivity tiles are decluttered below 15 dBZ by the
+// API. Start their shared key at NOAA's 15 dBZ cyan-green transition so hidden
+// colors are not advertised.
+const _declutteredReflectivityPalette = <Color>[
   Color(0xFF58C2B9),
   Color(0xFF30D65B),
   Color(0xFF0DAF12),

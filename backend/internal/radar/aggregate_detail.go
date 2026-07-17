@@ -42,6 +42,10 @@ const (
 	// live view, and stale high-resolution precipitation is worse than retaining
 	// the lower-resolution current base.
 	aggregateDetailMaxLag = 10 * time.Minute
+
+	// Derived tile keys include this revision so a presentation change never
+	// reuses an older composite from a shared cache under the same radar scan.
+	aggregatePresentationRevision = "reflectivity-floor-15-v1"
 )
 
 type aggregateDetailStation struct {
@@ -65,11 +69,11 @@ type radarStationCatalog struct {
 
 func (s *Service) aggregateTile(ctx context.Context, _ Selection, latest Latest, z, x, y int) (upstream.Result, error) {
 	if z < aggregateDetailMinZoom || latest.Detail == nil {
-		return s.fetchAggregateBaseTile(ctx, latest, z, x, y)
+		return s.fetchFilteredAggregateBaseTile(ctx, latest, z, x, y)
 	}
 	detail := *latest.Detail
 	if !aggregateDetailIntersectsTile(detail, z, x, y) {
-		return s.fetchAggregateBaseTile(ctx, latest, z, x, y)
+		return s.fetchFilteredAggregateBaseTile(ctx, latest, z, x, y)
 	}
 
 	type tileResponse struct {
@@ -80,7 +84,7 @@ func (s *Service) aggregateTile(ctx context.Context, _ Selection, latest Latest,
 	defer cancelFetch()
 	baseReady := make(chan tileResponse, 1)
 	go func() {
-		result, err := s.fetchAggregateBaseTile(fetchCtx, latest, z, x, y)
+		result, err := s.fetchFilteredAggregateBaseTile(fetchCtx, latest, z, x, y)
 		baseReady <- tileResponse{result: result, err: err}
 	}()
 	detailReady := make(chan tileResponse, 1)
@@ -110,7 +114,14 @@ func (s *Service) aggregateTile(ctx context.Context, _ Selection, latest Latest,
 		return base.result, nil
 	}
 
-	compositeKey := fmt.Sprintf("tile:aggregate-composite:%s:%d:%d:%d", latest.Version, z, x, y)
+	compositeKey := fmt.Sprintf(
+		"tile:aggregate-composite:%s:%s:%d:%d:%d",
+		aggregatePresentationRevision,
+		latest.Version,
+		z,
+		x,
+		y,
+	)
 	result, err := s.fetcher.Derive(ctx, compositeKey, s.config.TileTTL, "image/png", func(context.Context) (upstream.Result, error) {
 		filtered, err := filterStationReflectivityTile("reflectivity", station.result.Value.Body)
 		if err != nil {
@@ -131,6 +142,29 @@ func (s *Service) aggregateTile(ctx context.Context, _ Selection, latest Latest,
 		return base.result, nil
 	}
 	return result, nil
+}
+
+func (s *Service) fetchFilteredAggregateBaseTile(ctx context.Context, latest Latest, z, x, y int) (upstream.Result, error) {
+	key := fmt.Sprintf(
+		"tile:aggregate-filtered:%s:%s:%d:%d:%d",
+		aggregatePresentationRevision,
+		aggregateRegionalVersion(latest),
+		z,
+		x,
+		y,
+	)
+	return s.fetcher.Derive(ctx, key, s.config.TileTTL, "image/png", func(buildCtx context.Context) (upstream.Result, error) {
+		result, err := s.fetchAggregateBaseTile(buildCtx, latest, z, x, y)
+		if err != nil {
+			return upstream.Result{}, err
+		}
+		filtered, err := filterReflectivityTile(result.Value.Body)
+		if err != nil {
+			return upstream.Result{}, fmt.Errorf("filter aggregate reflectivity tile: %w", err)
+		}
+		result.Value.Body = filtered
+		return result, nil
+	})
 }
 
 func (s *Service) fetchAggregateBaseTile(ctx context.Context, latest Latest, z, x, y int) (upstream.Result, error) {

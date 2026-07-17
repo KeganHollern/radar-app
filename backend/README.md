@@ -58,9 +58,11 @@ At zoom 9 and above, an aggregate request with an explicit station overlays that
 station's 0.5-degree super-resolution reflectivity scan across its coverage.
 The client chooses one station for the whole viewport, so neighboring tiles do
 not switch radar or scan at an arbitrary grid edge. The station scan is resolved
-once per manifest at or immediately before the same regional observation, weak
-signals below 15 dBZ are removed, and scans more than 10 minutes behind are not
-used. Tiles use the normal bounded upstream timeout and fall back to the exact
+once per manifest at or immediately before the same regional observation. Both
+the regional mosaic and station overlay remove weak signals below approximately
+15 dBZ, so a fallback or mode switch does not reveal a second field of weak blue
+echoes. Scans more than 10 minutes behind are not used. Tiles use the normal
+bounded upstream timeout and fall back to the exact, identically filtered
 regional mosaic on timeout, malformed data, or station outage. Requests using
 `conus` never perform station metadata or tile work.
 

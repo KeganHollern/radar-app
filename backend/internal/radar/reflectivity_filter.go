@@ -8,10 +8,12 @@ import (
 	"image/png"
 )
 
-// stationReflectivityFloorDBZ is a presentation threshold, not meteorological
-// quality control. NOAA notes that measurable precipitation is generally near
-// 15 dBZ or greater, making that a reasonable floor for the rain-focused view.
-const stationReflectivityFloorDBZ = 15
+// reflectivityFloorDBZ is a presentation threshold, not meteorological quality
+// control. NOAA notes that measurable precipitation is generally near 15 dBZ
+// or greater, making that a reasonable floor for the rain-focused view. Apply
+// the same floor to station and aggregate reflectivity so switching modes does
+// not reveal a second field of weak echoes from the regional mosaic.
+const reflectivityFloorDBZ = 15
 
 const maxPaletteDistanceSquared = 32 * 32
 
@@ -20,10 +22,11 @@ type reflectivityPaletteSample struct {
 	r, g, b uint8
 }
 
-// NOAA publishes the station RIDGE layer as a pre-colored RGBA GeoTIFF rather
-// than a numeric reflectivity raster. These samples are taken every 2 dBZ from
-// the official SR_BREF WMS legend (-28 through 70 dBZ), with the final endpoint
-// included. Unknown colors fail open and remain visible.
+// NOAA publishes the RIDGE reflectivity layers as pre-colored RGBA rasters
+// rather than numeric reflectivity tiles. The station SR_BREF and regional
+// BREF.QCD products use the same color progression. These samples are taken
+// every 2 dBZ from the official SR_BREF WMS legend (-28 through 70 dBZ), with
+// the final endpoint included. Unknown colors fail open and remain visible.
 var reflectivityPalette = []reflectivityPaletteSample{
 	{-28, 0x8d, 0x81, 0x7f}, {-26, 0x91, 0x88, 0x6d},
 	{-24, 0x94, 0x8e, 0x5b}, {-22, 0x9c, 0x98, 0x5e},
@@ -57,7 +60,10 @@ func filterStationReflectivityTile(product string, body []byte) ([]byte, error) 
 	if product != "reflectivity" {
 		return body, nil
 	}
+	return filterReflectivityTile(body)
+}
 
+func filterReflectivityTile(body []byte) ([]byte, error) {
 	source, err := png.Decode(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("decode PNG: %w", err)
@@ -112,7 +118,7 @@ func isWeakReflectivityColor(red, green, blue uint8) bool {
 			closestDBZ = sample.dbz
 		}
 	}
-	return closestDistance <= maxPaletteDistanceSquared && closestDBZ < stationReflectivityFloorDBZ
+	return closestDistance <= maxPaletteDistanceSquared && closestDBZ < reflectivityFloorDBZ
 }
 
 func colorDistanceSquared(red, green, blue uint8, sample reflectivityPaletteSample) int {

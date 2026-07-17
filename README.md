@@ -24,7 +24,8 @@ There are deliberately no forecasts, animation loops, or historical timeline.
 - device location dot, one-time local startup focus, and opt-in follow mode that
   keeps the current zoom
 - current MRMS/RIDGE aggregate reflectivity, enriched when zoomed in with one
-  exact super-resolution station scan pinned to the viewport
+  exact super-resolution station scan pinned to the viewport, with one shared
+  weak-signal presentation floor across aggregate and station reflectivity
 - tap-to-select WSR-88D stations with current reflectivity and radial velocity
 - active NWS alert polygons, persisted per-type visibility settings, overlap
   selection, event colors, and tap-through alert details

@@ -60,6 +60,8 @@ App Transport Security exception. Production should remain HTTPS.
   updates drive the choice while browsing; accepted device locations own it in
   follow mode. A handoff margin prevents GPS jitter from repeatedly rebuilding
   the radar source, and regional radar remains visible during a detail outage.
+  Nearby and station reflectivity share the same approximately 15 dBZ
+  presentation floor so weak blue echoes do not reappear when modes change.
 - The wakelock is enabled while the app is in the foreground and released when
   it is backgrounded.
 - Radar metadata uses server-sent events for prompt updates, with 15-second

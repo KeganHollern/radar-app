@@ -12,14 +12,15 @@ void main() {
     );
   }
 
-  testWidgets('reflectivity legend communicates intensity and units', (
+  testWidgets('nearby reflectivity legend discloses the presentation floor', (
     tester,
   ) async {
     await pumpLegend(tester, RadarMode.aggregate);
 
     expect(find.text('REFLECTIVITY'), findsOneWidget);
-    expect(find.text('dBZ'), findsOneWidget);
-    expect(find.text('-20 · weak'), findsOneWidget);
+    expect(find.text('dBZ · <15 hidden'), findsOneWidget);
+    expect(find.text('15 · light'), findsOneWidget);
+    expect(find.text('-20 · weak'), findsNothing);
     expect(find.text('70 · intense'), findsOneWidget);
     expect(
       tester.getSize(find.byKey(const Key('radar-legend-color-bar'))).width,
@@ -27,7 +28,7 @@ void main() {
     );
     expect(
       find.bySemanticsLabel(
-        'Reflectivity color scale in dBZ, from light echoes to intense echoes.',
+        'Reflectivity color scale in dBZ, from light echoes to intense echoes. Weak returns below 15 dBZ are hidden.',
       ),
       findsOneWidget,
     );
@@ -43,7 +44,7 @@ void main() {
     expect(find.text('-20 · weak'), findsNothing);
     expect(
       find.bySemanticsLabel(
-        'Station reflectivity color scale in dBZ, from light echoes to intense echoes. Weak returns below 15 dBZ are hidden.',
+        'Reflectivity color scale in dBZ, from light echoes to intense echoes. Weak returns below 15 dBZ are hidden.',
       ),
       findsOneWidget,
     );
