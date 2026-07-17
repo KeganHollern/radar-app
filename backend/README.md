@@ -16,6 +16,7 @@ to `https://radar.lystic.dev`.
 
 ## Client API
 
+- `GET /` — self-contained Anvil marketing page (no upstream dependency)
 - `GET /healthz` — process liveness
 - `GET /readyz` — process readiness (NOAA outages do not trigger restart loops)
 - `GET /api/v1/config` — product, refresh, elevation, color, and URL manifest

@@ -21,8 +21,9 @@ There are deliberately no forecasts, animation loops, or historical timeline.
 ## What works
 
 - dark, pannable/zoomable MapLibre map with roads and place labels
-- device location dot, one-time local startup focus, and opt-in follow mode that
-  keeps the current zoom
+- device location dot, immediate regional startup at the last recent app or
+  operating-system fix, one-time live-location correction, and opt-in follow
+  mode that keeps the current zoom
 - current MRMS/RIDGE aggregate reflectivity, enriched when zoomed in with one
   exact super-resolution station scan pinned to the viewport, with one shared
   weak-signal presentation floor across aggregate and station reflectivity
@@ -33,6 +34,8 @@ There are deliberately no forecasts, animation loops, or historical timeline.
 - foreground wake lock so the screen remains on while Anvil is open
 - bounded/coalesced upstream caching, stale-on-error behavior, and SSE refresh
 - non-root container, health probes, GHCR publishing, and Kubernetes manifests
+- responsive Flexoki landing page at `radar.lystic.dev` with no external asset
+  dependencies
 
 The current official RIDGE station service exposes only the `0.5°` scan. The UI
 and API model support per-product elevation lists, but real higher tilts require
@@ -57,6 +60,7 @@ same origin so generated tile templates remain reachable.
 
 Useful endpoints:
 
+- `GET /` — Anvil landing page
 - `GET /healthz` and `GET /readyz`
 - `GET /api/v1/config`
 - `GET /api/v1/stations`

@@ -247,9 +247,17 @@ NODD Level II (phase) ┘           │                                  │
 
 The mobile app owns location permission, the location dot, map gestures, and
 pin/follow state. Location is not sent to the backend for the basic radar view.
-The first live device fix focuses the startup map once at zoom 8, unless the
+The mobile client stores its latest accepted device fix locally at a bounded
+write rate. On a later launch, a valid fix no more than 30 days old seeds the
+native map directly at zoom 8, so the national fallback never flashes first.
+During the first launch after upgrading from an older build without that local
+record, an already-authorized operating-system location cache is used as the
+fallback. This cache lookup never requests permission itself. Malformed,
+out-of-range, excessively coarse, future-dated, and older records are ignored.
+The first fresh device fix may correct that restored position once, unless the
 user has already interacted with the map or enabled follow. This startup focus
-does not turn on continuous tracking.
+does not turn on continuous tracking, and the persisted coordinates are never
+sent to the API.
 When follow is enabled, each accepted location update recenters the map without
 changing zoom or bearing. Only the explicit pin control should disable follow;
 if panning remains enabled while pinned, the next accepted location update returns

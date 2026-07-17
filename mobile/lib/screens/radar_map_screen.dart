@@ -12,13 +12,23 @@ import '../controllers/startup_camera_focus.dart';
 import '../models/alert_selection.dart';
 import '../models/radar_models.dart';
 import '../services/location_service.dart';
+import '../services/native_startup_location_source.dart';
+import '../services/startup_location_resolver.dart';
+import '../services/startup_location_store.dart';
 import '../theme/flexoki_theme.dart';
 import '../widgets/map_attribution.dart';
 import '../widgets/radar_legend.dart';
 import '../widgets/settings_panel.dart';
 
 class RadarMapScreen extends StatefulWidget {
-  const RadarMapScreen({super.key});
+  const RadarMapScreen({
+    super.key,
+    this.startupLocationStore,
+    this.nativeStartupLocationSource,
+  });
+
+  final StartupLocationStore? startupLocationStore;
+  final NativeStartupLocationSource? nativeStartupLocationSource;
 
   @override
   State<RadarMapScreen> createState() => _RadarMapScreenState();
@@ -33,8 +43,15 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   static const _alertsLineLayer = 'weather-alerts-outline';
   static const _stationsSource = 'radar-stations-source';
   static const _stationsLayer = 'radar-stations-layer';
+  static const _fallbackCameraPosition = CameraPosition(
+    target: LatLng(39.5, -98.35),
+    zoom: 3.25,
+  );
 
   late final RadarController _radar;
+  late final StartupLocationStore _startupLocationStore;
+  late final StartupLocationWriter _startupLocationWriter;
+  late final StartupLocationResolver _startupLocationResolver;
   final LocationService _location = LocationService();
   final StartupCameraFocus _startupCameraFocus = StartupCameraFocus();
   final NearbyLocationGate _nearbyLocationGate = NearbyLocationGate();
@@ -53,21 +70,48 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   bool _forceStyleSync = false;
   bool _handlingAlertTap = false;
   LatLng? _latestUserLocation;
+  CameraPosition? _initialCameraPosition;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _startupLocationStore =
+        widget.startupLocationStore ?? SharedPreferencesStartupLocationStore();
+    _startupLocationWriter = StartupLocationWriter(_startupLocationStore);
+    _startupLocationResolver = StartupLocationResolver(
+      local: _startupLocationStore,
+      native:
+          widget.nativeStartupLocationSource ??
+          GeolocatorNativeStartupLocationSource(),
+    );
     _radar = RadarController()..addListener(_onRadarChanged);
+    unawaited(_prepareInitialCamera());
     unawaited(_radar.initialize());
     unawaited(_requestLocation());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) return;
-    unawaited(_radar.resume());
-    unawaited(_requestLocation());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_radar.resume());
+      unawaited(_requestLocation());
+    } else {
+      unawaited(_startupLocationWriter.flush());
+    }
+  }
+
+  Future<void> _prepareInitialCamera() async {
+    final saved = await _startupLocationResolver.load();
+    if (!mounted) return;
+    setState(() {
+      _initialCameraPosition = saved == null
+          ? _fallbackCameraPosition
+          : CameraPosition(
+              target: saved.position,
+              zoom: StartupCameraFocus.zoom,
+            );
+    });
   }
 
   Future<void> _requestLocation() async {
@@ -115,6 +159,12 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       return;
     }
     _latestUserLocation = location.position;
+    _startupLocationWriter.record(
+      StartupLocation(
+        position: location.position,
+        observedAt: location.timestamp,
+      ),
+    );
     _startupCameraFocus.updateLocation(location.position);
     if (_pinLocation) _updateNearbyDetailStation(location.position);
     unawaited(_applyStartupCameraFocus());
@@ -409,39 +459,39 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       body: Stack(
         children: [
           Positioned.fill(
-            child: Listener(
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: _onMapPointerDown,
-              child: MapLibreMap(
-                styleString: AppConfig.mapStyleUrl,
-                initialCameraPosition: const CameraPosition(
-                  target: LatLng(39.5, -98.35),
-                  zoom: 3.25,
-                ),
-                minMaxZoomPreference: const MinMaxZoomPreference(2.5, 15),
-                onMapCreated: _onMapCreated,
-                onStyleLoadedCallback: _onStyleLoaded,
-                onUserLocationUpdated: _onUserLocationUpdated,
-                onCameraTrackingDismissed: _onTrackingDismissed,
-                onCameraIdle: _onCameraIdle,
-                myLocationEnabled: _locationAccess == LocationAccess.granted,
-                myLocationTrackingMode: MyLocationTrackingMode.none,
-                myLocationRenderMode: MyLocationRenderMode.normal,
-                trackCameraPosition: true,
-                compassEnabled: true,
-                rotateGesturesEnabled: false,
-                tiltGesturesEnabled: false,
-                logoEnabled: false,
-                attributionButtonPosition:
-                    AttributionButtonPosition.bottomRight,
-                // maplibre_gl exposes ornament margins but no way to disable
-                // its native attribution button. Move that broken duplicate
-                // outside the viewport; the compact Flutter source button
-                // supplies the visible, accessible attribution interaction.
-                attributionButtonMargins: const Point(-64, -64),
-                foregroundLoadColor: Flexoki.black,
-              ),
-            ),
+            child: _initialCameraPosition == null
+                ? const ColoredBox(color: Flexoki.black)
+                : Listener(
+                    behavior: HitTestBehavior.translucent,
+                    onPointerDown: _onMapPointerDown,
+                    child: MapLibreMap(
+                      styleString: AppConfig.mapStyleUrl,
+                      initialCameraPosition: _initialCameraPosition!,
+                      minMaxZoomPreference: const MinMaxZoomPreference(2.5, 15),
+                      onMapCreated: _onMapCreated,
+                      onStyleLoadedCallback: _onStyleLoaded,
+                      onUserLocationUpdated: _onUserLocationUpdated,
+                      onCameraTrackingDismissed: _onTrackingDismissed,
+                      onCameraIdle: _onCameraIdle,
+                      myLocationEnabled:
+                          _locationAccess == LocationAccess.granted,
+                      myLocationTrackingMode: MyLocationTrackingMode.none,
+                      myLocationRenderMode: MyLocationRenderMode.normal,
+                      trackCameraPosition: true,
+                      compassEnabled: true,
+                      rotateGesturesEnabled: false,
+                      tiltGesturesEnabled: false,
+                      logoEnabled: false,
+                      attributionButtonPosition:
+                          AttributionButtonPosition.bottomRight,
+                      // maplibre_gl exposes ornament margins but no way to disable
+                      // its native attribution button. Move that broken duplicate
+                      // outside the viewport; the compact Flutter source button
+                      // supplies the visible, accessible attribution interaction.
+                      attributionButtonMargins: const Point(-64, -64),
+                      foregroundLoadColor: Flexoki.black,
+                    ),
+                  ),
           ),
           SafeArea(
             minimum: const EdgeInsets.fromLTRB(12, 10, 12, 12),
@@ -648,6 +698,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_startupLocationWriter.flush());
     _radar.removeListener(_onRadarChanged);
     _radar.dispose();
     _map?.dispose();
@@ -888,14 +939,15 @@ class _PinButton extends StatelessWidget {
         elevation: 9,
         shadowColor: Colors.black87,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: pinned ? Flexoki.cyan : Flexoki.base300),
         ),
         child: InkWell(
+          key: const ValueKey('pin-location-button'),
           onTap: onPressed,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(16),
           child: SizedBox.square(
-            dimension: 64,
+            dimension: mapUtilityButtonDimension,
             child: Icon(
               pinned ? Icons.gps_fixed_rounded : Icons.gps_not_fixed_rounded,
               size: 30,

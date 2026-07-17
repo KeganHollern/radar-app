@@ -5,6 +5,11 @@ import 'package:radar_mobile/models/data_attribution.dart';
 import 'package:radar_mobile/widgets/map_attribution.dart';
 
 void main() {
+  test('utility controls align with the default Nearby stack', () {
+    expect(mapUtilityButtonDimension, greaterThanOrEqualTo(48));
+    expect(mapUtilityButtonDimension * 2 + 8, 112);
+  });
+
   testWidgets('compact source button is accessible and responds to taps', (
     tester,
   ) async {
@@ -28,7 +33,7 @@ void main() {
     );
     expect(
       tester.getSize(find.byKey(const ValueKey('map-attribution-button'))),
-      const Size.square(64),
+      const Size.square(mapUtilityButtonDimension),
     );
 
     await tester.tap(find.byKey(const ValueKey('map-attribution-button')));

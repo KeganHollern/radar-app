@@ -5,6 +5,10 @@ import '../theme/flexoki_theme.dart';
 
 typedef AttributionLinkOpener = Future<void> Function(Uri uri);
 
+/// Shared square size for the compact map utility controls. Two controls plus
+/// their 8 px gap match the default Nearby legend and mode stack at 112 px.
+const mapUtilityButtonDimension = 52.0;
+
 const _weatherAttributions = [
   DataAttribution(
     label: 'NOAA / National Weather Service',
@@ -37,15 +41,15 @@ class MapAttributionButton extends StatelessWidget {
         elevation: 9,
         shadowColor: Colors.black87,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(16),
           side: const BorderSide(color: Flexoki.base300),
         ),
         child: InkWell(
           key: const ValueKey('map-attribution-button'),
           onTap: onPressed,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(16),
           child: const SizedBox.square(
-            dimension: 64,
+            dimension: mapUtilityButtonDimension,
             child: Icon(
               Icons.info_outline_rounded,
               size: 28,
