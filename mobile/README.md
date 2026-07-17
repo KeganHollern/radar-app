@@ -59,7 +59,10 @@ App Transport Security exception. Production should remain HTTPS.
 - Nearby chooses one high-detail radar for the whole viewport. Camera-idle
   updates drive the choice while browsing; accepted device locations own it in
   follow mode. A handoff margin prevents GPS jitter from repeatedly rebuilding
-  the radar source, and regional radar remains visible during a detail outage.
+  the radar source. Native raster layers are double-buffered so the previous
+  complete image remains visible while a new station or scan loads, and
+  MapLibre crossfades generation-pinned parent/child tiles during zoom changes.
+  Regional radar remains visible during a detail outage.
   Nearby and station reflectivity share the same approximately 15 dBZ
   presentation floor so weak blue echoes do not reappear when modes change.
 - The wakelock is enabled while the app is in the foreground and released when

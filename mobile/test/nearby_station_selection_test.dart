@@ -223,6 +223,36 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('replacement loading has no empty idle notification frame', () async {
+    final requests = _SelectionRequests();
+    final controller = RadarController(api: requests.api);
+
+    controller.updateNearbyDetailStation(latitude: 40, longitude: -100);
+    await controller.refreshStations();
+    await pumpEventQueue(times: 20);
+    expect(controller.snapshot, isNotNull);
+
+    final frames = <({bool empty, bool loading})>[];
+    controller.addListener(() {
+      frames.add((
+        empty: controller.snapshot == null,
+        loading: controller.isLoadingRadar,
+      ));
+    });
+
+    controller.selectStationById('KBBB');
+    await pumpEventQueue(times: 20);
+
+    expect(frames, isNotEmpty);
+    expect(
+      frames.where((frame) => frame.empty && !frame.loading),
+      isEmpty,
+      reason: 'the map must hold its complete layer while a replacement loads',
+    );
+    expect(controller.snapshot, isNotNull);
+    controller.dispose();
+  });
 }
 
 RadarStation _station({

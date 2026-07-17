@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../config/app_config.dart';
 import '../controllers/nearby_location_gate.dart';
 import '../controllers/radar_controller.dart';
+import '../controllers/radar_layer_swap.dart';
 import '../controllers/startup_camera_focus.dart';
 import '../models/alert_selection.dart';
 import '../models/radar_models.dart';
@@ -36,8 +37,10 @@ class RadarMapScreen extends StatefulWidget {
 
 class _RadarMapScreenState extends State<RadarMapScreen>
     with WidgetsBindingObserver {
-  static const _radarSource = 'live-radar-source';
-  static const _radarLayer = 'live-radar-layer';
+  static const _radarOpacity = 0.62;
+  // Keep the pending layer renderable so MapLibre fetches its visible tiles,
+  // while making its contribution imperceptible beneath the active layer.
+  static const _radarPreloadOpacity = 0.001;
   static const _alertsSource = 'weather-alerts-source';
   static const _alertsFillLayer = 'weather-alerts-fill';
   static const _alertsLineLayer = 'weather-alerts-outline';
@@ -55,14 +58,16 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   final LocationService _location = LocationService();
   final StartupCameraFocus _startupCameraFocus = StartupCameraFocus();
   final NearbyLocationGate _nearbyLocationGate = NearbyLocationGate();
+  final RadarLayerSwapCoordinator _radarLayers = RadarLayerSwapCoordinator();
   MapLibreMapController? _map;
+  int _styleGeneration = 0;
   LocationAccess _locationAccess = LocationAccess.checking;
   bool _styleLoaded = false;
   bool _pinLocation = false;
   bool _restoreTracking = false;
   bool _baseSourcesInstalled = false;
-  bool _radarInstalled = false;
-  String _renderedRadarKey = '';
+  RadarLayerCandidate? _radarSwapAwaitingIdle;
+  RadarLayerCandidate? _radarSwapReady;
   int _renderedStationRevision = -1;
   int _renderedAlertRevision = -1;
   bool _styleSyncRunning = false;
@@ -137,10 +142,11 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   void _onStyleLoaded() {
+    _styleGeneration++;
     _styleLoaded = true;
     _baseSourcesInstalled = false;
-    _radarInstalled = false;
-    _renderedRadarKey = '';
+    _radarLayers.reset();
+    _clearRadarSwapReadiness();
     _renderedStationRevision = -1;
     _renderedAlertRevision = -1;
     _updateNearbyDetailStation(_map?.cameraPosition?.target);
@@ -227,6 +233,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   Future<void> _syncStyle({required bool force}) async {
     final map = _map;
     if (map == null || !_styleLoaded) return;
+    final styleGeneration = _styleGeneration;
 
     if (!_baseSourcesInstalled) {
       await map.addGeoJsonSource(
@@ -234,6 +241,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
         _emptyFeatureCollection,
         promoteId: 'id',
       );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
       await map.addFillLayer(
         _alertsSource,
         _alertsFillLayer,
@@ -244,6 +252,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
         ),
         enableInteraction: true,
       );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
       await map.addLineLayer(
         _alertsSource,
         _alertsLineLayer,
@@ -254,11 +263,13 @@ class _RadarMapScreenState extends State<RadarMapScreen>
         ),
         enableInteraction: false,
       );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
       await map.addGeoJsonSource(
         _stationsSource,
         _emptyFeatureCollection,
         promoteId: 'id',
       );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
       await map.addCircleLayer(
         _stationsSource,
         _stationsLayer,
@@ -282,6 +293,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
         minzoom: 2.5,
         enableInteraction: true,
       );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
       _baseSourcesInstalled = true;
     }
 
@@ -289,28 +301,252 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     if (stationRevision != _renderedStationRevision) {
       final stationGeoJson = _radar.stationGeoJson;
       await map.setGeoJsonSource(_stationsSource, stationGeoJson);
+      if (!_isCurrentStyle(map, styleGeneration)) return;
       _renderedStationRevision = stationRevision;
     }
     final alertRevision = _radar.alertRevision;
     if (alertRevision != _renderedAlertRevision) {
       final alertGeoJson = _radar.alertGeoJson;
       await map.setGeoJsonSource(_alertsSource, alertGeoJson);
+      if (!_isCurrentStyle(map, styleGeneration)) return;
       _renderedAlertRevision = alertRevision;
     }
 
     final nextKey = _radar.radarLayerKey;
     final tileTemplate = _radar.activeTileTemplate;
-    if (!force && nextKey == _renderedRadarKey) return;
-    if (_radarInstalled) {
-      await map.removeLayer(_radarLayer);
-      await map.removeSource(_radarSource);
-      _radarInstalled = false;
+    final effectiveKey = tileTemplate == null ? '' : nextKey;
+    if (effectiveKey.isEmpty &&
+        _radar.isLoadingRadar &&
+        _radarLayers.active != null) {
+      // Explicit station/mode/elevation changes clear the controller snapshot
+      // while their replacement manifest is loading. Keep the last complete
+      // layer visible until that manifest can be staged.
+      return;
     }
-    _renderedRadarKey = nextKey;
-    if (nextKey.isEmpty || tileTemplate == null) return;
+    if (force && _radarLayers.hasLayers) {
+      await _retireRadarCandidates(map, _radarLayers.reset().retired);
+      _clearRadarSwapReadiness();
+      if (!_isCurrentStyle(map, styleGeneration)) return;
+    }
 
+    final transition = _radarLayers.reconcile(
+      key: effectiveKey,
+      resampling: _radar.mode == RadarMode.stationVelocity
+          ? 'nearest'
+          : 'linear',
+    );
+    await _applyRadarTransition(map, transition, tileTemplate: tileTemplate);
+    if (!_isCurrentStyle(map, styleGeneration)) {
+      final candidate = transition.candidate;
+      if (candidate != null) {
+        await _retireRadarCandidates(map, [candidate]);
+      }
+      _radarLayers.reset();
+      _clearRadarSwapReadiness();
+      return;
+    }
+
+    final pending = _radarLayers.pending;
+    final currentTileTemplate = _radar.activeTileTemplate;
+    final currentKey = currentTileTemplate == null ? '' : _radar.radarLayerKey;
+    if (pending != null &&
+        !_radar.isLoadingRadar &&
+        identical(_radarSwapAwaitingIdle, pending) &&
+        identical(_radarSwapReady, pending) &&
+        pending.key == effectiveKey &&
+        pending.key == currentKey) {
+      await _promoteRadarCandidate(
+        map,
+        pending,
+        styleGeneration: styleGeneration,
+      );
+    }
+  }
+
+  Future<void> _applyRadarTransition(
+    MapLibreMapController map,
+    RadarLayerTransition transition, {
+    required String? tileTemplate,
+  }) async {
+    switch (transition.kind) {
+      case RadarLayerTransitionKind.none:
+        return;
+      case RadarLayerTransitionKind.reset:
+      case RadarLayerTransitionKind.discardPending:
+        _clearRadarSwapReadiness();
+        await _retireRadarCandidates(map, transition.retired);
+        return;
+      case RadarLayerTransitionKind.install:
+        _clearRadarSwapReadiness();
+        await _retireRadarCandidates(map, transition.retired);
+        final candidate = transition.candidate!;
+        try {
+          // A prior platform failure may have left this otherwise inactive
+          // slot behind. Cleanup is idempotent and the coordinator commits a
+          // retryable empty state if installation still fails.
+          await _retireRadarCandidates(map, [candidate]);
+          await _addRadarCandidate(
+            map,
+            candidate,
+            tileTemplate: tileTemplate!,
+            opacity: _radarOpacity,
+            belowLayerId: await _radarBelowLayer(map),
+          );
+        } catch (_) {
+          await _retireRadarCandidates(map, _radarLayers.reset().retired);
+          rethrow;
+        }
+        return;
+      case RadarLayerTransitionKind.stage:
+      case RadarLayerTransitionKind.supersede:
+        _clearRadarSwapReadiness();
+        await _retireRadarCandidates(map, transition.retired);
+        final candidate = transition.candidate!;
+        try {
+          await _retireRadarCandidates(map, [candidate]);
+          await _addRadarCandidate(
+            map,
+            candidate,
+            tileTemplate: tileTemplate!,
+            opacity: _radarPreloadOpacity,
+            belowLayerId: _radarLayers.active!.layerId,
+          );
+        } catch (_) {
+          await _retireRadarCandidates(
+            map,
+            _radarLayers.discardPending().retired,
+          );
+          rethrow;
+        }
+        if (identical(_radarLayers.pending, candidate)) {
+          _radarSwapAwaitingIdle = candidate;
+        }
+        return;
+      case RadarLayerTransitionKind.promote:
+        // Promotion is applied only by [_promoteRadarCandidate], after the
+        // native layer has been made visible and the old slot is retired.
+        return;
+    }
+  }
+
+  Future<void> _addRadarCandidate(
+    MapLibreMapController map,
+    RadarLayerCandidate candidate, {
+    required String tileTemplate,
+    required double opacity,
+    required String? belowLayerId,
+  }) async {
+    await map.addSource(
+      candidate.sourceId,
+      RasterSourceProperties(
+        tiles: [tileTemplate],
+        tileSize: 256,
+        minzoom: 0,
+        maxzoom: 12,
+        attribution: 'Weather data: NOAA/NWS',
+      ),
+    );
+    try {
+      await map.addRasterLayer(
+        candidate.sourceId,
+        candidate.layerId,
+        _radarLayerProperties(candidate, opacity),
+        belowLayerId: belowLayerId,
+      );
+    } catch (_) {
+      try {
+        await map.removeSource(candidate.sourceId);
+      } catch (_) {
+        // The source may already be absent after a partial native add.
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _promoteRadarCandidate(
+    MapLibreMapController map,
+    RadarLayerCandidate pending, {
+    required int styleGeneration,
+  }) async {
+    final active = _radarLayers.active;
+    await map.setLayerProperties(
+      pending.layerId,
+      _radarLayerProperties(pending, _radarOpacity),
+    );
+    if (!_isCurrentStyle(map, styleGeneration) ||
+        !identical(_radarLayers.pending, pending)) {
+      await _retireRadarCandidates(map, [pending]);
+      return;
+    }
+    final currentTemplate = _radar.activeTileTemplate;
+    final currentKey = currentTemplate == null ? '' : _radar.radarLayerKey;
+    if (_radar.isLoadingRadar ||
+        !identical(_radarSwapReady, pending) ||
+        currentKey != pending.key) {
+      // The camera or desired generation changed while the native property
+      // update was in flight. Keep preloading beneath the active layer and
+      // wait for a fresh idle signal (or the queued superseding transition).
+      await map.setLayerProperties(
+        pending.layerId,
+        _radarLayerProperties(pending, _radarPreloadOpacity),
+      );
+      return;
+    }
+    if (active != null) await _retireRadarCandidates(map, [active]);
+
+    final promotion = _radarLayers.promote();
+    if (!identical(promotion.candidate, pending)) return;
+    _clearRadarSwapReadiness();
+  }
+
+  RasterLayerProperties _radarLayerProperties(
+    RadarLayerCandidate candidate,
+    double opacity,
+  ) => RasterLayerProperties(
+    rasterOpacity: opacity,
+    // Preserve the previously rendered parent/child tile while MapLibre adds
+    // its replacement at a new zoom level. All tile URLs are generation-pinned,
+    // so this crossfade cannot mix different live scans.
+    rasterFadeDuration: 300,
+    // Velocity bins are categorical measurements. Preserve nearest-neighbor
+    // sampling both while preloading and after the slot is promoted.
+    rasterResampling: candidate.resampling,
+  );
+
+  Future<void> _retireRadarCandidates(
+    MapLibreMapController map,
+    Iterable<RadarLayerCandidate> candidates,
+  ) async {
+    final retiredSlots = <RadarLayerSlot>{};
+    for (final candidate in candidates) {
+      if (!retiredSlots.add(candidate.slot)) continue;
+      try {
+        await map.removeLayer(candidate.layerId);
+      } catch (_) {
+        // Cleanup is deliberately idempotent: a source can be absent after a
+        // style reload or a partially failed native add.
+      }
+      try {
+        await map.removeSource(candidate.sourceId);
+      } catch (_) {
+        // See the layer cleanup note above.
+      }
+    }
+  }
+
+  bool _isCurrentStyle(MapLibreMapController map, int generation) =>
+      mounted &&
+      identical(_map, map) &&
+      _styleLoaded &&
+      _styleGeneration == generation;
+
+  void _clearRadarSwapReadiness() {
+    _radarSwapAwaitingIdle = null;
+    _radarSwapReady = null;
+  }
+
+  Future<String?> _radarBelowLayer(MapLibreMapController map) async {
     final layerIds = await map.getLayerIds();
-    String? belowLayer;
     for (final rawId in layerIds.reversed) {
       final id = rawId.toString();
       if (id == _alertsFillLayer ||
@@ -320,36 +556,10 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       }
       if (id.toLowerCase().contains('label') ||
           id.toLowerCase().contains('place')) {
-        belowLayer = id;
-        break;
+        return id;
       }
     }
-    await map.addSource(
-      _radarSource,
-      RasterSourceProperties(
-        tiles: [tileTemplate],
-        tileSize: 256,
-        minzoom: 0,
-        maxzoom: 12,
-        attribution: 'Weather data: NOAA/NWS',
-      ),
-    );
-    await map.addRasterLayer(
-      _radarSource,
-      _radarLayer,
-      RasterLayerProperties(
-        rasterOpacity: 0.62,
-        rasterFadeDuration: 0,
-        // Velocity bins are categorical measurements. Linear interpolation
-        // blends toward/away colors during zoom and can imply values NOAA did
-        // not report, so preserve their nearest rendered sample instead.
-        rasterResampling: _radar.mode == RadarMode.stationVelocity
-            ? 'nearest'
-            : 'linear',
-      ),
-      belowLayerId: belowLayer,
-    );
-    _radarInstalled = true;
+    return null;
   }
 
   void _onFeatureTapped(
@@ -445,6 +655,20 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     }
   }
 
+  void _onCameraMove(CameraPosition _) {
+    // A readiness signal belongs to the viewport that produced it. The staged
+    // source keeps loading while the camera moves and must become idle again
+    // at the new viewport before it can replace the visible layer.
+    _radarSwapReady = null;
+  }
+
+  void _onMapIdle() {
+    final pending = _radarLayers.pending;
+    if (pending == null || !identical(_radarSwapAwaitingIdle, pending)) return;
+    _radarSwapReady = pending;
+    _queueStyleSync();
+  }
+
   void _updateNearbyDetailStation(LatLng? target) {
     if (target == null) return;
     _radar.updateNearbyDetailStation(
@@ -472,7 +696,9 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                       onStyleLoadedCallback: _onStyleLoaded,
                       onUserLocationUpdated: _onUserLocationUpdated,
                       onCameraTrackingDismissed: _onTrackingDismissed,
+                      onCameraMove: _onCameraMove,
                       onCameraIdle: _onCameraIdle,
+                      onMapIdle: _onMapIdle,
                       myLocationEnabled:
                           _locationAccess == LocationAccess.granted,
                       myLocationTrackingMode: MyLocationTrackingMode.none,

@@ -481,8 +481,10 @@ final class RadarController {
   void _invalidateAndRefresh() {
     _radarRequest++;
     _loadingRadar = false;
-    _notify();
     unawaited(_restartUpdates());
+    // refreshRadar sets the loading state and notifies synchronously before
+    // its first network await. Avoid an intermediate empty/not-loading frame,
+    // which would tell the map to discard the complete layer being replaced.
     unawaited(refreshRadar());
   }
 
