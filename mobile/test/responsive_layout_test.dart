@@ -108,6 +108,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('landscape-side-panel')), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('landscape-side-panel')),
+        matching: find.byType(Divider),
+      ),
+      findsNothing,
+    );
     final panel = tester.getRect(
       find.byKey(const ValueKey('landscape-side-panel')),
     );

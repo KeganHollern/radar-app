@@ -100,7 +100,6 @@ class _LandscapeSidePanelState extends State<LandscapeSidePanel> {
                     ),
                   ),
                 ),
-                const Divider(height: 1),
                 Expanded(child: widget.builder(context, _scrollController)),
               ],
             ),
