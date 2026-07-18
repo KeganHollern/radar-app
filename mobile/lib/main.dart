@@ -4,10 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'screens/radar_map_screen.dart';
+import 'services/alert_notification_background.dart';
 import 'theme/flexoki_theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await initializeAlertNotificationBackground();
+  } catch (_) {
+    // Radar remains usable if the OS background scheduler is unavailable. The
+    // settings controller will retry reconciliation on launch and resume.
+  }
   unawaited(WakelockPlus.enable());
   runApp(const RadarApp());
 }

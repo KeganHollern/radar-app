@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../controllers/alert_notification_controller.dart';
 import '../theme/flexoki_theme.dart';
+import 'alert_notification_settings.dart';
 
 /// Reusable application settings content for a modal sheet or full page.
 class RadarSettingsPanel extends StatelessWidget {
@@ -10,6 +12,7 @@ class RadarSettingsPanel extends StatelessWidget {
     required this.isAlertTypeVisible,
     required this.onAlertTypeChanged,
     required this.onShowAllAlertTypes,
+    this.notificationController,
     this.scrollController,
     this.landscape = false,
     super.key,
@@ -20,6 +23,7 @@ class RadarSettingsPanel extends StatelessWidget {
   final bool Function(String alertType) isAlertTypeVisible;
   final void Function(String alertType, bool visible) onAlertTypeChanged;
   final VoidCallback onShowAllAlertTypes;
+  final AlertNotificationController? notificationController;
   final ScrollController? scrollController;
   final bool landscape;
 
@@ -49,6 +53,11 @@ class RadarSettingsPanel extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 4),
+        if (notificationController case final controller?)
+          AlertNotificationSettingsSection(
+            controller: controller,
+            learnedAlertTypes: alertTypes,
+          ),
         const Text(
           'WEATHER ALERTS',
           style: TextStyle(
@@ -108,6 +117,7 @@ class RadarSettingsPanel extends StatelessWidget {
 
   Widget _buildLandscape(BuildContext context, bool hasHiddenType) {
     final rowCount = (alertTypes.length / 2).ceil();
+    final notificationItemCount = notificationController == null ? 0 : 1;
     return Column(
       key: const ValueKey('radar-settings-panel'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -131,94 +141,81 @@ class RadarSettingsPanel extends StatelessWidget {
         ),
         const Divider(height: 1),
         Expanded(
-          child: alertTypes.isEmpty
-              ? ListView(
-                  key: const ValueKey('settings-alert-types-scroll'),
-                  controller: scrollController,
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
-                  children: [
-                    _landscapeAlertIntro(),
-                    const Padding(
-                      padding: EdgeInsets.only(top: 24),
-                      child: Center(
-                        child: Text(
-                          'Alert types will appear after live alerts are loaded.',
-                          style: TextStyle(color: Flexoki.base500),
-                        ),
-                      ),
+          child: ListView.builder(
+            key: const ValueKey('settings-alert-types-scroll'),
+            controller: scrollController,
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+            itemCount: notificationItemCount + rowCount + 2,
+            itemBuilder: (context, itemIndex) {
+              if (notificationController case final controller?
+                  when itemIndex == 0) {
+                return AlertNotificationSettingsSection(
+                  controller: controller,
+                  learnedAlertTypes: alertTypes,
+                  landscape: true,
+                );
+              }
+              final contentIndex = itemIndex - notificationItemCount;
+              if (contentIndex == 0) return _landscapeAlertIntro();
+              if (contentIndex == rowCount + 1) {
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    alertTypes.isEmpty
+                        ? 'Alert types will appear after live alerts are loaded.'
+                        : 'Hidden alerts remain active National Weather Service products; this setting only changes their display in HyprRadar.',
+                    style: const TextStyle(
+                      color: Flexoki.base500,
+                      fontSize: 12,
                     ),
-                  ],
-                )
-              : ListView.builder(
-                  key: const ValueKey('settings-alert-types-scroll'),
-                  controller: scrollController,
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
-                  itemCount: rowCount + 2,
-                  itemBuilder: (context, itemIndex) {
-                    if (itemIndex == 0) {
-                      return _landscapeAlertIntro();
-                    }
-                    if (itemIndex == rowCount + 1) {
-                      return const Padding(
-                        padding: EdgeInsets.only(top: 6),
-                        child: Text(
-                          'Hidden alerts remain active National Weather Service products; this setting only changes their display in HyprRadar.',
-                          style: TextStyle(
-                            color: Flexoki.base500,
-                            fontSize: 12,
+                  ),
+                );
+              }
+              final rowIndex = contentIndex - 1;
+              final firstIndex = rowIndex * 2;
+              final secondIndex = firstIndex + 1;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: _LandscapeAlertTypeTile(
+                          alertType: alertTypes[firstIndex],
+                          activeCount:
+                              alertTypeCounts[alertTypes[firstIndex]] ?? 0,
+                          visible: isAlertTypeVisible(alertTypes[firstIndex]),
+                          onChanged: (visible) => onAlertTypeChanged(
+                            alertTypes[firstIndex],
+                            visible,
                           ),
                         ),
-                      );
-                    }
-                    final rowIndex = itemIndex - 1;
-                    final firstIndex = rowIndex * 2;
-                    final secondIndex = firstIndex + 1;
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: IntrinsicHeight(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(
-                              child: _LandscapeAlertTypeTile(
-                                alertType: alertTypes[firstIndex],
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: secondIndex < alertTypes.length
+                            ? _LandscapeAlertTypeTile(
+                                alertType: alertTypes[secondIndex],
                                 activeCount:
-                                    alertTypeCounts[alertTypes[firstIndex]] ??
+                                    alertTypeCounts[alertTypes[secondIndex]] ??
                                     0,
                                 visible: isAlertTypeVisible(
-                                  alertTypes[firstIndex],
+                                  alertTypes[secondIndex],
                                 ),
                                 onChanged: (visible) => onAlertTypeChanged(
-                                  alertTypes[firstIndex],
+                                  alertTypes[secondIndex],
                                   visible,
                                 ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: secondIndex < alertTypes.length
-                                  ? _LandscapeAlertTypeTile(
-                                      alertType: alertTypes[secondIndex],
-                                      activeCount:
-                                          alertTypeCounts[alertTypes[secondIndex]] ??
-                                          0,
-                                      visible: isAlertTypeVisible(
-                                        alertTypes[secondIndex],
-                                      ),
-                                      onChanged: (visible) =>
-                                          onAlertTypeChanged(
-                                            alertTypes[secondIndex],
-                                            visible,
-                                          ),
-                                    )
-                                  : const SizedBox.shrink(),
-                            ),
-                          ],
-                        ),
+                              )
+                            : const SizedBox.shrink(),
                       ),
-                    );
-                  },
+                    ],
+                  ),
                 ),
+              );
+            },
+          ),
         ),
       ],
     );

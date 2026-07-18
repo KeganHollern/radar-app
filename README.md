@@ -39,6 +39,9 @@ APK on an Android device and allow installation from that source when prompted.
   selection, event colors, and tap-through alert details
 - foreground radar and alert refresh, plus coalesced manual retry with visible
   progress and last-check freshness feedback
+- Android background notifications with independent per-type selection,
+  Near-me or Nationwide scope, first-run permission guidance, persistent alert
+  deduplication, and automatic cancellation when all notification types are off
 - foreground wake lock so the screen remains on while HyprRadar is open
 - bounded/coalesced upstream caching, stale-on-error behavior, and SSE refresh
 - non-root container, health probes, GHCR publishing, and Kubernetes manifests

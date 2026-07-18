@@ -225,6 +225,34 @@ NWS product. When several visible polygons cover one tap point, query every
 rendered alert feature there and present a chooser before opening the existing
 detail sheet.
 
+Background-notification preferences are separate from map visibility. Android
+users choose exact event names and one scope: **Near me** or **Nationwide**.
+The defaults are a narrow set of life-threatening warning types near the user.
+HyprRadar uses Android WorkManager's network-constrained periodic work, whose
+minimum interval is 15 minutes and whose execution may be delayed by Doze,
+battery policy, or device vendors. This is a supplemental best-effort check, not
+seconds-level push delivery and not a replacement for Wireless Emergency Alerts.
+
+Each worker reads uncached shared preferences first. If no event types are
+enabled, or required permissions are unavailable, it exits before location or
+network access. Changing the final type to off cancels the unique periodic work;
+Nationwide scope never requests location. Near-me scope requires Android's
+background location permission and sends the latest usable fix rounded to three
+decimal places (roughly 100 meters) to the radar API's point-scoped alert route.
+The API and app do not persist that request coordinate. A persistent on-device
+ledger deduplicates stable NWS alert IDs and referenced CAP updates. The first
+nationwide check establishes a baseline rather than flooding the notification
+tray with alerts that were already active. Later nationwide checks persist only
+an HTTP ETag on the device and use conditional requests when the active set is
+unchanged. Enabling a new alert type forces one complete response so that type
+can establish its own baseline. Resuming after an explicit pause also advances a
+persisted baseline generation, preventing alerts accumulated while off from
+flooding the tray. Point-scoped request URLs can remain briefly in
+the Go process's bounded in-memory response-cache keys and are forwarded to NWS,
+but query strings are omitted from access logs and no coordinate is written to
+persistent app or backend storage. The first nearby check does not baseline: a
+current life-threatening warning is surfaced immediately when monitoring begins.
+
 The map should fill alert geometry with an explicit, accessible event/severity
 color policy and a strong outline. Color is presentation, not an NWS-defined
 priority ordering; never infer danger from color alone. Show label/legend text
@@ -246,7 +274,9 @@ NODD Level II (phase) ┘           │                                  │
 ```
 
 The mobile app owns location permission, the location dot, map gestures, and
-pin/follow state. Location is not sent to the backend for the basic radar view.
+pin/follow state. Location is not sent to the backend for the basic radar view;
+only the separately opted-in Near-me notification worker sends a rounded point
+for an active-alert lookup.
 The mobile client stores its latest accepted device fix locally at a bounded
 write rate. On a later launch, a valid fix no more than 30 days old seeds the
 native map directly at zoom 8, so the national fallback never flashes first.
@@ -256,8 +286,8 @@ fallback. This cache lookup never requests permission itself. Malformed,
 out-of-range, excessively coarse, future-dated, and older records are ignored.
 The first fresh device fix may correct that restored position once, unless the
 user has already interacted with the map or enabled follow. This startup focus
-does not turn on continuous tracking, and the persisted coordinates are never
-sent to the API.
+does not turn on continuous tracking, and the persisted startup coordinate is
+not sent to the API.
 When follow is enabled, each accepted location update recenters the map without
 changing zoom or bearing. Only the explicit pin control should disable follow;
 if panning remains enabled while pinned, the next accepted location update returns

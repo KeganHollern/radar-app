@@ -6,6 +6,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_config.dart';
+import '../controllers/alert_notification_controller.dart';
 import '../controllers/nearby_location_gate.dart';
 import '../controllers/radar_controller.dart';
 import '../controllers/radar_layer_swap.dart';
@@ -55,6 +56,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   );
 
   late final RadarController _radar;
+  late final AlertNotificationController _alertNotifications;
   late final StartupLocationStore _startupLocationStore;
   late final StartupLocationWriter _startupLocationWriter;
   late final StartupLocationResolver _startupLocationResolver;
@@ -94,9 +96,10 @@ class _RadarMapScreenState extends State<RadarMapScreen>
           GeolocatorNativeStartupLocationSource(),
     );
     _radar = RadarController()..addListener(_onRadarChanged);
+    _alertNotifications = AlertNotificationController();
     unawaited(_prepareInitialCamera());
     unawaited(_radar.initialize());
-    unawaited(_requestLocation());
+    unawaited(_initializeLocationAndNotifications());
   }
 
   @override
@@ -104,6 +107,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     if (state == AppLifecycleState.resumed) {
       unawaited(_radar.resume());
       unawaited(_requestLocation());
+      unawaited(_alertNotifications.refreshPermissions());
     } else {
       unawaited(_startupLocationWriter.flush());
     }
@@ -129,6 +133,41 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     if (access == LocationAccess.granted && _pinLocation) {
       await _setTrackingMode(MyLocationTrackingMode.tracking);
     }
+  }
+
+  Future<void> _initializeLocationAndNotifications() async {
+    await _requestLocation();
+    await _alertNotifications.initialize();
+    if (!mounted || !_alertNotifications.needsOnboarding) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || !_alertNotifications.needsOnboarding) return;
+    final enable = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        scrollable: true,
+        title: const Text('Weather alerts while you’re away'),
+        content: const Text(
+          'HyprRadar can check selected National Weather Service alerts about every 15 minutes while the app is closed. Nearby checks need notification permission and “Allow all the time” location access. Android may delay background work to save battery.\n\nYour location is rounded to roughly 100 meters and sent through the radar service to NWS only to request alerts covering that point. It is not written to persistent storage. When every alert type is off, HyprRadar cancels background checks.',
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('alert-notification-onboarding-decline'),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton.icon(
+            key: const ValueKey('alert-notification-onboarding-enable'),
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.notifications_active_outlined),
+            label: const Text('Enable alerts'),
+          ),
+        ],
+      ),
+    );
+    await _alertNotifications.completeOnboarding(
+      requestPermissions: enable == true,
+    );
   }
 
   void _onRadarChanged() {
@@ -810,6 +849,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
           builder: (context, setPanelState) => RadarSettingsPanel(
             scrollController: scrollController,
             landscape: true,
+            notificationController: _alertNotifications,
             alertTypes: _radar.knownAlertTypes,
             alertTypeCounts: _radar.alertTypeCounts,
             isAlertTypeVisible: _radar.isAlertTypeVisible,
@@ -837,6 +877,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
         builder: (context, scrollController) => StatefulBuilder(
           builder: (context, setSheetState) => RadarSettingsPanel(
             scrollController: scrollController,
+            notificationController: _alertNotifications,
             alertTypes: _radar.knownAlertTypes,
             alertTypeCounts: _radar.alertTypeCounts,
             isAlertTypeVisible: _radar.isAlertTypeVisible,
@@ -982,6 +1023,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     unawaited(_startupLocationWriter.flush());
     _radar.removeListener(_onRadarChanged);
     _radar.dispose();
+    _alertNotifications.dispose();
     _map?.dispose();
     super.dispose();
   }
