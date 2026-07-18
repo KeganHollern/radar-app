@@ -4,19 +4,38 @@ import 'package:flutter/material.dart';
 
 import '../controllers/alert_notification_controller.dart';
 import '../models/alert_notification_models.dart';
+import '../models/alert_type_category.dart';
 import '../theme/flexoki_theme.dart';
+import 'alert_type_picker.dart';
 
-class AlertNotificationSettingsSection extends StatelessWidget {
-  const AlertNotificationSettingsSection({
+String alertNotificationSettingsSummary(
+  AlertNotificationController controller,
+) {
+  final permission = controller.permission;
+  final preferences = controller.preferences;
+  if (!permission.supported) return 'Unavailable on this device';
+  if (!permission.notificationsGranted) return 'Permission required';
+  final count = preferences.enabledTypes.length;
+  final selected = '$count ${count == 1 ? 'type' : 'types'} selected';
+  if (!preferences.monitoringEnabled) return 'Off · $selected';
+  return 'On · ${preferences.scope.label} · $selected';
+}
+
+class AlertNotificationSettingsPage extends StatelessWidget {
+  const AlertNotificationSettingsPage({
     required this.controller,
     required this.learnedAlertTypes,
-    this.landscape = false,
+    required this.scrollController,
+    required this.onBack,
+    required this.onCategorySelected,
     super.key,
   });
 
   final AlertNotificationController controller;
   final Iterable<String> learnedAlertTypes;
-  final bool landscape;
+  final ScrollController? scrollController;
+  final VoidCallback onBack;
+  final ValueChanged<AlertTypeCategory> onCategorySelected;
 
   @override
   Widget build(BuildContext context) {
@@ -25,201 +44,237 @@ class AlertNotificationSettingsSection extends StatelessWidget {
       builder: (context, _) {
         final preferences = controller.preferences;
         final permission = controller.permission;
-        final types = controller.alertTypes(learnedAlertTypes);
-        final notificationControlsEnabled =
+        final groups = groupAlertTypes(
+          controller.alertTypes(learnedAlertTypes),
+        );
+        final controlsEnabled =
             permission.supported &&
             permission.notificationsGranted &&
             !controller.busy;
-        return Column(
-          key: const ValueKey('alert-notification-settings'),
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        return ListView(
+          key: const ValueKey('settings-page-notifications'),
+          controller: scrollController,
+          padding: const EdgeInsets.only(bottom: 28),
           children: [
-            Row(
-              children: [
-                const Expanded(child: _SectionLabel('NOTIFICATIONS')),
-                TextButton(
-                  key: const ValueKey('disable-all-alert-notifications'),
-                  onPressed:
-                      notificationControlsEnabled &&
-                          preferences.enabledTypes.isNotEmpty
-                      ? () => unawaited(controller.disableAll())
-                      : null,
-                  child: const Text('Turn off all'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 2),
-            const Text(
-              'Choose alert types and whether checks cover your current area or the entire U.S.',
-              style: TextStyle(color: Flexoki.base500, fontSize: 13),
-            ),
-            const SizedBox(height: 10),
-            if (permission.supported) ...[
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Flexoki.base100,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Flexoki.base200),
-                ),
-                child: SwitchListTile.adaptive(
-                  key: const ValueKey('alert-notification-master'),
-                  value: preferences.monitoringEnabled,
-                  onChanged: notificationControlsEnabled
-                      ? (enabled) =>
-                            unawaited(controller.setMonitoringEnabled(enabled))
-                      : null,
-                  title: const Text(
-                    'Background notifications',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  subtitle: const Text(
-                    'Master switch for periodic alert checks.',
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
-            if (!permission.supported)
-              const _PermissionCard(
-                icon: Icons.phone_android_rounded,
-                title: 'Android background alerts',
-                body:
-                    'Background weather notifications are currently available on Android.',
-              )
-            else if (!permission.notificationsGranted)
-              _PermissionCard(
-                icon: Icons.notifications_off_outlined,
-                title: 'Notifications are disabled',
-                body:
-                    'Enable notification permission before choosing background weather alerts.',
-                actionLabel: controller.busy
-                    ? 'Opening…'
-                    : 'Enable permissions',
-                onAction: controller.busy
-                    ? null
-                    : () => unawaited(controller.enableNotifications()),
-              )
-            else if (!permission.backgroundLocationGranted)
-              _PermissionCard(
-                icon: Icons.location_off_outlined,
-                title: preferences.scope == AlertNotificationScope.nearby
-                    ? 'Nearby monitoring is paused'
-                    : 'Enable Near me alerts',
-                body: preferences.scope == AlertNotificationScope.nearby
-                    ? 'Choose Allow all the time so HyprRadar can check where you are while closed, or select Nationwide.'
-                    : 'Nationwide alerts are active without location. Enable Allow all the time only if you want to use Near me.',
-                actionLabel: controller.busy
-                    ? 'Opening…'
-                    : 'Enable background location',
-                onAction: controller.busy
-                    ? null
-                    : () => unawaited(controller.enableBackgroundLocation()),
-              ),
-            if (permission.supported) ...[
-              const SizedBox(height: 12),
-              Text(
-                'ALERT AREA',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: Flexoki.base500,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.9,
-                ),
-              ),
-              const SizedBox(height: 7),
-              SegmentedButton<AlertNotificationScope>(
-                key: const ValueKey('alert-notification-scope'),
-                segments: [
-                  ButtonSegment(
-                    value: AlertNotificationScope.nearby,
-                    enabled:
-                        notificationControlsEnabled &&
-                        permission.backgroundLocationGranted,
-                    icon: const Icon(Icons.my_location_rounded, size: 18),
-                    label: const Text('Near me'),
-                  ),
-                  ButtonSegment(
-                    value: AlertNotificationScope.nationwide,
-                    enabled: notificationControlsEnabled,
-                    icon: const Icon(Icons.public_rounded, size: 18),
-                    label: const Text('Nationwide'),
-                  ),
-                ],
-                selected: {preferences.scope},
-                onSelectionChanged: notificationControlsEnabled
-                    ? (selection) {
-                        if (selection.isNotEmpty) {
-                          unawaited(controller.setScope(selection.first));
-                        }
-                      }
+            SettingsPageHeader(
+              title: 'Background notifications',
+              onBack: onBack,
+              action: TextButton(
+                key: const ValueKey('disable-all-alert-notifications'),
+                onPressed:
+                    controlsEnabled && preferences.enabledTypes.isNotEmpty
+                    ? () => unawaited(controller.disableAll())
                     : null,
+                child: const Text('Turn off all'),
               ),
-              const SizedBox(height: 12),
-              Text(
-                'ALERT TYPES',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: Flexoki.base500,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.9,
-                ),
-              ),
-              const SizedBox(height: 7),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Flexoki.base100,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Flexoki.base200),
-                ),
-                child: landscape
-                    ? _LandscapeNotificationTypes(
-                        types: types,
-                        controller: controller,
-                        enabled: notificationControlsEnabled,
-                      )
-                    : Column(
-                        children: [
-                          for (
-                            var index = 0;
-                            index < types.length;
-                            index++
-                          ) ...[
-                            if (index > 0)
-                              const Divider(
-                                height: 1,
-                                indent: 16,
-                                endIndent: 16,
-                              ),
-                            _NotificationTypeSwitch(
-                              type: types[index],
-                              selected: controller.isAlertTypeEnabled(
-                                types[index],
-                              ),
-                              enabled: notificationControlsEnabled,
-                              onChanged: (selected) => unawaited(
-                                controller.setAlertTypeEnabled(
-                                  types[index],
-                                  selected,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Column(
+                key: const ValueKey('alert-notification-settings'),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Choose which alerts can notify you while HyprRadar is closed.',
+                    style: TextStyle(color: Flexoki.base500, fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+                  if (permission.supported) ...[
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Flexoki.base100,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Flexoki.base200),
                       ),
+                      child: SwitchListTile.adaptive(
+                        key: const ValueKey('alert-notification-master'),
+                        value: preferences.monitoringEnabled,
+                        onChanged: controlsEnabled
+                            ? (enabled) => unawaited(
+                                controller.setMonitoringEnabled(enabled),
+                              )
+                            : null,
+                        title: const Text(
+                          'Background notifications',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        subtitle: const Text(
+                          'Master switch for periodic alert checks.',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  if (!permission.supported)
+                    const _PermissionCard(
+                      icon: Icons.phone_android_rounded,
+                      title: 'Android background alerts',
+                      body:
+                          'Background weather notifications are currently available on Android.',
+                    )
+                  else if (!permission.notificationsGranted)
+                    _PermissionCard(
+                      icon: Icons.notifications_off_outlined,
+                      title: 'Notifications are disabled',
+                      body:
+                          'Enable notification permission before choosing background weather alerts.',
+                      actionLabel: controller.busy
+                          ? 'Opening…'
+                          : 'Enable permissions',
+                      onAction: controller.busy
+                          ? null
+                          : () => unawaited(controller.enableNotifications()),
+                    )
+                  else if (!permission.backgroundLocationGranted)
+                    _PermissionCard(
+                      icon: Icons.location_off_outlined,
+                      title: preferences.scope == AlertNotificationScope.nearby
+                          ? 'Nearby monitoring is paused'
+                          : 'Enable Near me alerts',
+                      body: preferences.scope == AlertNotificationScope.nearby
+                          ? 'Choose Allow all the time so HyprRadar can check where you are while closed, or select Nationwide.'
+                          : 'Nationwide alerts are active without location. Enable Allow all the time only if you want to use Near me.',
+                      actionLabel: controller.busy
+                          ? 'Opening…'
+                          : 'Enable background location',
+                      onAction: controller.busy
+                          ? null
+                          : () => unawaited(
+                              controller.enableBackgroundLocation(),
+                            ),
+                    ),
+                  if (permission.supported) ...[
+                    const SizedBox(height: 16),
+                    const _SectionLabel('ALERT AREA'),
+                    const SizedBox(height: 7),
+                    SegmentedButton<AlertNotificationScope>(
+                      key: const ValueKey('alert-notification-scope'),
+                      segments: [
+                        ButtonSegment(
+                          value: AlertNotificationScope.nearby,
+                          enabled:
+                              controlsEnabled &&
+                              permission.backgroundLocationGranted,
+                          icon: const Icon(Icons.my_location_rounded, size: 18),
+                          label: const Text('Near me'),
+                        ),
+                        ButtonSegment(
+                          value: AlertNotificationScope.nationwide,
+                          enabled: controlsEnabled,
+                          icon: const Icon(Icons.public_rounded, size: 18),
+                          label: const Text('Nationwide'),
+                        ),
+                      ],
+                      selected: {preferences.scope},
+                      onSelectionChanged: controlsEnabled
+                          ? (selection) {
+                              if (selection.isNotEmpty) {
+                                unawaited(controller.setScope(selection.first));
+                              }
+                            }
+                          : null,
+                    ),
+                    const SizedBox(height: 18),
+                    const _SectionLabel('ALERT TYPES'),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Open a group to choose the alert types that can notify you.',
+                      style: TextStyle(color: Flexoki.base500, fontSize: 13),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final group in groups)
+                      AlertTypeCategoryTile(
+                        category: group.category,
+                        keyPrefix: 'notification-alert-category',
+                        summary: _selectionSummary(
+                          group.types,
+                          controller.isAlertTypeEnabled,
+                        ),
+                        onTap: () => onCategorySelected(group.category),
+                      ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _statusText(controller),
+                      key: const ValueKey('alert-notification-status'),
+                      style: const TextStyle(
+                        color: Flexoki.base500,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ],
               ),
-              const SizedBox(height: 10),
-              Text(
-                _statusText(controller),
-                key: const ValueKey('alert-notification-status'),
-                style: const TextStyle(color: Flexoki.base500, fontSize: 12),
-              ),
-            ],
-            const SizedBox(height: 18),
-            const Divider(height: 1),
-            const SizedBox(height: 16),
+            ),
           ],
         );
       },
     );
   }
+}
+
+class AlertNotificationTypePickerPage extends StatelessWidget {
+  const AlertNotificationTypePickerPage({
+    required this.controller,
+    required this.learnedAlertTypes,
+    required this.category,
+    required this.scrollController,
+    required this.onBack,
+    super.key,
+  });
+
+  final AlertNotificationController controller;
+  final Iterable<String> learnedAlertTypes;
+  final AlertTypeCategory category;
+  final ScrollController? scrollController;
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final group = groupAlertTypes(
+          controller.alertTypes(learnedAlertTypes),
+        ).where((group) => group.category == category).firstOrNull;
+        final permission = controller.permission;
+        final enabled =
+            permission.supported &&
+            permission.notificationsGranted &&
+            !controller.busy;
+        return AlertTypePicker(
+          key: ValueKey('settings-page-notification-${category.storageKey}'),
+          controller: scrollController,
+          header: SettingsPageHeader(
+            title: category.label,
+            onBack: onBack,
+            backTooltip: 'Back to background notifications',
+          ),
+          category: category,
+          types: group?.types ?? const [],
+          isSelected: controller.isAlertTypeEnabled,
+          enabled: enabled,
+          semanticAction: 'Notify for',
+          toggleKeyPrefix: 'notification-alert-type',
+          onChanged: controller.setAlertTypeEnabled,
+          footer: Text(
+            enabled
+                ? 'Notification choices do not change which alerts appear on the map.'
+                : 'Enable notification permission to change these choices.',
+            style: const TextStyle(color: Flexoki.base500, fontSize: 12),
+          ),
+        );
+      },
+    );
+  }
+}
+
+String _selectionSummary(
+  Iterable<String> types,
+  bool Function(String) isSelected,
+) {
+  final typeList = types.toList(growable: false);
+  final selected = typeList.where(isSelected).length;
+  return '$selected of ${typeList.length} selected';
 }
 
 String _statusText(AlertNotificationController controller) {
@@ -241,96 +296,6 @@ String _statusText(AlertNotificationController controller) {
       ? 'near your latest location'
       : 'nationwide';
   return '$count ${count == 1 ? 'type' : 'types'} enabled $scope. Android checks about every 15 minutes and may delay work to save battery.';
-}
-
-class _LandscapeNotificationTypes extends StatelessWidget {
-  const _LandscapeNotificationTypes({
-    required this.types,
-    required this.controller,
-    required this.enabled,
-  });
-
-  final List<String> types;
-  final AlertNotificationController controller;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    final rows = (types.length / 2).ceil();
-    return Column(
-      children: [
-        for (var row = 0; row < rows; row++) ...[
-          if (row > 0) const Divider(height: 1, indent: 12, endIndent: 12),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (var column = 0; column < 2; column++)
-                Expanded(
-                  child: row * 2 + column < types.length
-                      ? _NotificationTypeSwitch(
-                          type: types[row * 2 + column],
-                          selected: controller.isAlertTypeEnabled(
-                            types[row * 2 + column],
-                          ),
-                          enabled: enabled,
-                          compact: true,
-                          onChanged: (selected) => unawaited(
-                            controller.setAlertTypeEnabled(
-                              types[row * 2 + column],
-                              selected,
-                            ),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-            ],
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _NotificationTypeSwitch extends StatelessWidget {
-  const _NotificationTypeSwitch({
-    required this.type,
-    required this.selected,
-    required this.enabled,
-    required this.onChanged,
-    this.compact = false,
-  });
-
-  final String type;
-  final bool selected;
-  final bool enabled;
-  final ValueChanged<bool> onChanged;
-  final bool compact;
-
-  @override
-  Widget build(BuildContext context) {
-    return SwitchListTile.adaptive(
-      key: ValueKey('notification-alert-type-$type'),
-      value: selected,
-      onChanged: enabled ? onChanged : null,
-      dense: compact,
-      visualDensity: compact
-          ? const VisualDensity(horizontal: -1, vertical: -2)
-          : null,
-      title: Text(
-        type,
-        maxLines: compact ? 2 : null,
-        overflow: compact ? TextOverflow.ellipsis : null,
-        style: TextStyle(
-          fontSize: compact ? 12 : null,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-      contentPadding: EdgeInsets.symmetric(
-        horizontal: compact ? 8 : 14,
-        vertical: compact ? 0 : 2,
-      ),
-    );
-  }
 }
 
 class _PermissionCard extends StatelessWidget {
@@ -398,19 +363,18 @@ class _PermissionCard extends StatelessWidget {
 }
 
 class _SectionLabel extends StatelessWidget {
-  const _SectionLabel(this.label);
+  const _SectionLabel(this.text);
 
-  final String label;
+  final String text;
 
   @override
   Widget build(BuildContext context) {
     return Text(
-      label,
-      style: const TextStyle(
+      text,
+      style: Theme.of(context).textTheme.labelSmall?.copyWith(
         color: Flexoki.base500,
-        fontSize: 11,
         fontWeight: FontWeight.w800,
-        letterSpacing: 1.1,
+        letterSpacing: 0.9,
       ),
     );
   }

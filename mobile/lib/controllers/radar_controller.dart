@@ -43,6 +43,7 @@ final class RadarController {
   Map<String, dynamic> _alertGeoJson = _emptyFeatureCollection();
   List<WeatherAlert> _allAlerts = const [];
   List<WeatherAlert> _visibleAlerts = const [];
+  List<Map<String, dynamic>?> _alertGeoJsonFeatures = const [];
   final Set<String> _hiddenAlertTypes = {};
   final Map<String, String> _knownAlertTypeLabels = {};
   bool _alertVisibilityLoaded = false;
@@ -230,6 +231,7 @@ final class RadarController {
           if (_disposed) return;
           _allAlerts = List.unmodifiable(fresh.alerts);
           if (fresh.changed) {
+            _cacheAlertGeoJsonFeatures();
             final learnedTypes = _rememberAlertTypes(fresh.alerts);
             _rebuildVisibleAlerts();
             if (learnedTypes && _alertVisibilityLoaded) {
@@ -458,17 +460,30 @@ final class RadarController {
   }
 
   void _rebuildVisibleAlerts() {
-    _visibleAlerts = List.unmodifiable(
-      _allAlerts.where((alert) => isAlertTypeVisible(alert.event)),
-    );
+    final visibleAlerts = <WeatherAlert>[];
+    final visibleFeatures = <Map<String, dynamic>>[];
+    for (var index = 0; index < _allAlerts.length; index++) {
+      final alert = _allAlerts[index];
+      if (!isAlertTypeVisible(alert.event)) continue;
+      visibleAlerts.add(alert);
+      if (index < _alertGeoJsonFeatures.length) {
+        final feature = _alertGeoJsonFeatures[index];
+        if (feature != null) visibleFeatures.add(feature);
+      }
+    }
+    _visibleAlerts = List.unmodifiable(visibleAlerts);
     _alertGeoJson = {
       'type': 'FeatureCollection',
-      'features': _visibleAlerts
-          .where((alert) => alert.hasMapGeometry)
-          .map((alert) => alert.toGeoJsonFeature())
-          .toList(growable: false),
+      'features': List.unmodifiable(visibleFeatures),
     };
     alertRevision++;
+  }
+
+  void _cacheAlertGeoJsonFeatures() {
+    _alertGeoJsonFeatures = List.unmodifiable([
+      for (final alert in _allAlerts)
+        alert.hasMapGeometry ? alert.toGeoJsonFeature() : null,
+    ]);
   }
 
   Future<void> _saveAlertVisibility() async {

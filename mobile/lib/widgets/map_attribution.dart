@@ -14,6 +14,10 @@ const _weatherAttributions = [
     label: 'NOAA / National Weather Service',
     url: 'https://www.weather.gov/',
   ),
+  DataAttribution(
+    label: 'NOAA GOES-R GLM',
+    url: 'https://goes-r.noaa.gov/spacesegment/glm.html',
+  ),
 ];
 
 /// Replaces MapLibre's platform-owned attribution hit target with a compact,
@@ -102,13 +106,13 @@ class MapAttributionPanel extends StatelessWidget {
               icon: Icons.radar_rounded,
               title: 'Live weather',
               description:
-                  'Live radar imagery and active alerts are derived from NOAA and National Weather Service data.',
+                  'Live radar imagery, active alerts, and optional satellite-detected lightning flashes are derived from NOAA and National Weather Service data.',
             ),
             const SizedBox(height: 8),
             _SourceLinks(links: _weatherAttributions, onOpenLink: onOpenLink),
             const SizedBox(height: 18),
             const Text(
-              'HyprRadar is not affiliated with or endorsed by NOAA or the National Weather Service.',
+              'Lightning locations are approximate total-lightning flash centroids, not exact ground strikes or a proximity alarm. HyprRadar is not affiliated with or endorsed by NOAA or the National Weather Service.',
               style: TextStyle(color: Flexoki.base500, fontSize: 12),
             ),
           ],

@@ -123,10 +123,7 @@ class _LandscapeSidePanelState extends State<LandscapeSidePanel>
         curve: Curves.easeOutCubic,
       ),
     );
-    final didPop = await Navigator.maybePop(context);
-    if (didPop || !mounted) return;
-    _dismissing = false;
-    await _resetHorizontalDrag();
+    if (mounted) Navigator.pop(context);
   }
 
   @override
@@ -188,7 +185,7 @@ class _LandscapeSidePanelState extends State<LandscapeSidePanel>
                         child: IconButton(
                           key: const ValueKey('landscape-side-panel-close'),
                           tooltip: widget.closeLabel,
-                          onPressed: () => Navigator.maybePop(context),
+                          onPressed: () => Navigator.pop(context),
                           icon: const Icon(Icons.close_rounded),
                         ),
                       ),

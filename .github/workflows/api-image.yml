@@ -5,6 +5,7 @@ on:
     paths:
       - "backend/**"
       - "Dockerfile"
+      - "THIRD_PARTY_NOTICES.md"
       - ".dockerignore"
       - ".github/workflows/api-image.yml"
   push:
@@ -15,6 +16,7 @@ on:
     paths:
       - "backend/**"
       - "Dockerfile"
+      - "THIRD_PARTY_NOTICES.md"
       - ".dockerignore"
       - ".github/workflows/api-image.yml"
   workflow_dispatch:

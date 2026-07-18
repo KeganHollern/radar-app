@@ -18,7 +18,7 @@ the current public RIDGE II WSR-88D layers do not provide them.
 
 ## Authoritative data sources
 
-The source choices below were checked on 2026-07-12. Subscribe to NWS service
+The source choices below were checked on 2026-07-18. Subscribe to NWS service
 change notices and revalidate the OGC capabilities regularly rather than treating
 layer names as permanent.
 
@@ -189,6 +189,49 @@ when both levels use the same scan. Nearest-neighbor client resampling avoids
 inventing blended velocity colors but cannot preserve details smaller than a
 requested WMS pixel.
 
+### Lightning flashes
+
+Use the public NOAA GOES Geostationary Lightning Mapper Level-2 Lightning
+Detection product (`GLM-L2-LCFA`) from the NOAA Open Data Dissemination program:
+
+- GOES-19 / GOES-East: `s3://noaa-goes19/GLM-L2-LCFA/`
+- GOES-18 / GOES-West: `s3://noaa-goes18/GLM-L2-LCFA/`
+
+Each object covers roughly 20 seconds. NOAA documents approximately 20-second
+product latency and near-uniform spatial resolution of roughly 8 km at nadir to
+14 km near the edge of the field of view. The product measures **total
+lightning**—in-cloud, cloud-to-cloud, and cloud-to-ground—and cannot identify
+which kind produced an individual record. `flash_lat` and `flash_lon` are
+energy-weighted optical flash centroids, not exact ground-impact coordinates.
+See the [NOAA GLM instrument description](https://goes-r.noaa.gov/spacesegment/glm.html),
+[Level-2 dataset record](https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ncdc%3AC01527),
+and [NOAA GOES open-data registry](https://registry.opendata.aws/noaa-goes/).
+
+The Go service anonymously polls only the UTC-hour prefixes intersecting its
+short live window, ingests every unseen object in order, decodes the flash-level
+variables with a pure-Go NetCDF-4 reader, and accepts only good-quality finite
+coordinates and plausible observation times. It partitions GOES-East and
+GOES-West at `-105°` and the opposite `+75°` boundary so the same optical flash
+is not shown twice while dateline views remain assigned to GOES-West. Seen
+object IDs, flash IDs, retained events, subscriber queues, and response sizes
+are all bounded. A provider failure never changes API readiness or causes an
+expired flash to be replayed as live.
+
+Lightning is a separate foreground pipeline from the radar-generation stream.
+The public API exposes a short current snapshot and a dedicated update stream;
+the mobile client establishes the initial snapshot as a non-animated baseline.
+Only a flash ID first received afterward is drawn, using a crisp white bolt that
+fades for about one second from client receipt. The short server retention exists
+only for reconnect and deduplication—there is no lightning history or timeline.
+Switching the optional layer off, backgrounding the app, or disposing the screen
+cancels its update connection, fade timer, and rendering work without touching
+the radar raster layer.
+
+The UI must call these **satellite-detected lightning flashes** and disclose that
+locations are approximate and delayed. The layer is supplemental situational
+awareness, not a strike-proximity alarm, outdoor-safety instrument, or substitute
+for official warnings. Preserve NOAA attribution and never imply NOAA endorsement.
+
 ### Weather alerts
 
 Use `https://api.weather.gov/alerts/active` and request GeoJSON with a unique,
@@ -266,10 +309,11 @@ NOAA Weather Radio, local authorities, or safe driving judgment.
 ```text
 NWS CloudGIS WMS/WFS ─┐
 NWS Alerts API ───────┼──> Go API cache/normalizer ──> HTTPS ──> Flutter/MapLibre
-NODD Level II (phase) ┘           │                                  │
-                                 └── newest generation metadata      ├─ dark basemap
+GOES GLM/NODD ────────┤           │                                  │
+NODD Level II (phase) ┘           └── newest generation metadata      ├─ dark basemap
                                                                         radar raster
                                                                         alert fill
+                                                                        lightning pulse
                                                                         location dot
 ```
 

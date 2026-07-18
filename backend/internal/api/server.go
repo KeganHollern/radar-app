@@ -19,16 +19,19 @@ import (
 
 	"github.com/KeganHollern/radar-app/backend/internal/cache"
 	"github.com/KeganHollern/radar-app/backend/internal/config"
+	"github.com/KeganHollern/radar-app/backend/internal/lightning"
 	"github.com/KeganHollern/radar-app/backend/internal/radar"
 	"github.com/KeganHollern/radar-app/backend/internal/upstream"
 )
 
 type Server struct {
-	config  config.Config
-	logger  *slog.Logger
-	fetcher *upstream.Fetcher
-	radar   *radar.Service
-	handler http.Handler
+	config            config.Config
+	logger            *slog.Logger
+	fetcher           *upstream.Fetcher
+	radar             *radar.Service
+	lightning         *lightning.Service
+	lightningProvider *lightning.Provider
+	handler           http.Handler
 
 	zoneFailureMu sync.Mutex
 	zoneFailures  map[string]time.Time
@@ -50,12 +53,36 @@ func New(c config.Config, logger *slog.Logger) *Server {
 	fetcher := upstream.NewFetcher(client, responseCache, c.UserAgent, c.MaxUpstreamBytes, c.StaleTTL)
 	s := &Server{config: c, logger: logger, fetcher: fetcher, zoneFailures: make(map[string]time.Time)}
 	s.radar = radar.NewService(c, fetcher)
+	s.lightning = lightning.NewService(lightning.ServiceOptions{
+		Retention:     c.LightningRetention,
+		StaleAfter:    c.LightningStaleAfter,
+		MaxFlashes:    c.LightningMaxFlashes,
+		SeamLongitude: c.LightningSeamLongitude,
+	})
+	s.lightningProvider = lightning.NewProvider(lightning.ProviderOptions{
+		Enabled:        c.LightningEnabled,
+		EastBaseURL:    c.LightningEastURL,
+		WestBaseURL:    c.LightningWestURL,
+		PollInterval:   c.LightningPoll,
+		Retention:      c.LightningRetention,
+		MaxObjectBytes: c.LightningMaxObjectBytes,
+		MaxFlashes:     c.LightningMaxFlashes,
+		SeamLongitude:  c.LightningSeamLongitude,
+		UserAgent:      c.UserAgent,
+		Client:         client,
+		Logger:         logger,
+		Service:        s.lightning,
+	})
 	s.handler = s.routes()
 	return s
 }
 
 func (s *Server) Handler() http.Handler {
 	return s.handler
+}
+
+func (s *Server) Run(ctx context.Context) {
+	s.lightningProvider.Run(ctx)
 }
 
 func (s *Server) routes() http.Handler {
@@ -69,6 +96,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/radar/latest", s.latest)
 	mux.HandleFunc("GET /api/v1/radar/tiles/{product}/{station}/{elevation}/{z}/{x}/{y}", s.tile)
 	mux.HandleFunc("GET /api/v1/updates", s.updates)
+	mux.HandleFunc("GET /api/v1/lightning/latest", s.lightningLatest)
+	mux.HandleFunc("GET /api/v1/lightning/updates", s.lightningUpdates)
 	return s.recover(s.accessLog(s.headers(mux)))
 }
 
@@ -101,9 +130,150 @@ func (s *Server) clientConfig(w http.ResponseWriter, _ *http.Request) {
 				{"id": "velocity", "label": "Station radial velocity", "stationRequired": true, "elevations": s.radar.Elevations("velocity")},
 			},
 		},
+		"lightning": map[string]any{
+			"enabled":        s.config.LightningEnabled,
+			"latest":         s.config.PublicBaseURL + "/api/v1/lightning/latest",
+			"updatesSSE":     s.config.PublicBaseURL + "/api/v1/lightning/updates",
+			"kind":           lightning.FlashKind,
+			"retentionMs":    normalizedLightningRetention(s.config.LightningRetention).Milliseconds(),
+			"locationNotice": "GLM flash centroids are approximate satellite detections, not exact ground-strike locations.",
+		},
 		"alertColors": alertColors(),
-		"attribution": []string{"NOAA", "National Weather Service"},
+		"attribution": []string{"NOAA", "National Weather Service", lightning.AttributionText},
 	})
+}
+
+func (s *Server) lightningLatest(w http.ResponseWriter, r *http.Request) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "query string is malformed")
+		return
+	}
+	bounds, err := lightningBounds(query)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	snapshot := s.lightning.Snapshot(bounds, time.Now())
+	body, err := json.Marshal(snapshot)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not encode lightning data")
+		return
+	}
+	hash := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(hash[:8]) + `"`
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("ETag", etag)
+	if snapshot.CheckedAt != nil {
+		w.Header().Set("X-Data-Checked-At", snapshot.CheckedAt.Format(time.RFC3339Nano))
+	}
+	if matchesIfNoneMatch(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func (s *Server) lightningUpdates(w http.ResponseWriter, r *http.Request) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "query string is malformed")
+		return
+	}
+	bounds, err := lightningBounds(query)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming_unavailable", "streaming is unavailable")
+		return
+	}
+	updates, unsubscribe := s.lightning.Subscribe()
+	defer unsubscribe()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-store, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	if _, err := fmt.Fprint(w, "retry: 5000\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+	type streamState struct {
+		generation string
+		stale      bool
+		available  bool
+	}
+	var previous streamState
+	send := func(event string, onlyIfChanged bool) bool {
+		snapshot := s.lightning.Snapshot(bounds, time.Now())
+		current := streamState{generation: snapshot.Generation, stale: snapshot.Stale, available: snapshot.Available}
+		if onlyIfChanged && current == previous {
+			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+				return false
+			}
+			flusher.Flush()
+			return true
+		}
+		body, err := json.Marshal(snapshot)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\nid: %s\ndata: %s\n\n", event, snapshot.Generation, body); err != nil {
+			return false
+		}
+		previous = current
+		flusher.Flush()
+		return true
+	}
+	if !send("snapshot", false) {
+		return
+	}
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-updates:
+			if !send("lightning", false) {
+				return
+			}
+		case <-heartbeat.C:
+			if !send("lightning", true) {
+				return
+			}
+		}
+	}
+}
+
+func lightningBounds(query url.Values) (*lightning.Bounds, error) {
+	for key, values := range query {
+		if key != "bbox" {
+			return nil, fmt.Errorf("unsupported query parameter %q", key)
+		}
+		if len(values) != 1 {
+			return nil, errors.New("bbox may be supplied only once")
+		}
+	}
+	values, present := query["bbox"]
+	if !present {
+		return nil, nil
+	}
+	if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+		return nil, errors.New("bbox must contain west,south,east,north")
+	}
+	return lightning.ParseBounds(values[0])
+}
+
+func normalizedLightningRetention(value time.Duration) time.Duration {
+	if value <= 0 {
+		return 90 * time.Second
+	}
+	return value
 }
 
 func (s *Server) stations(w http.ResponseWriter, r *http.Request) {

@@ -2,24 +2,28 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/app_config.dart';
 import '../controllers/alert_notification_controller.dart';
+import '../controllers/lightning_controller.dart';
 import '../controllers/nearby_location_gate.dart';
 import '../controllers/radar_controller.dart';
 import '../controllers/radar_layer_swap.dart';
 import '../controllers/startup_camera_focus.dart';
 import '../models/alert_selection.dart';
+import '../models/lightning_models.dart';
 import '../models/radar_models.dart';
 import '../services/location_service.dart';
 import '../services/native_startup_location_source.dart';
 import '../services/startup_location_resolver.dart';
 import '../services/startup_location_store.dart';
 import '../theme/flexoki_theme.dart';
-import '../widgets/map_attribution.dart';
 import '../widgets/landscape_side_panel.dart';
+import '../widgets/lightning_settings.dart';
+import '../widgets/map_attribution.dart';
 import '../widgets/radar_legend.dart';
 import '../widgets/responsive_map_chrome.dart';
 import '../widgets/settings_panel.dart';
@@ -50,6 +54,10 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   static const _alertsLineLayer = 'weather-alerts-outline';
   static const _stationsSource = 'radar-stations-source';
   static const _stationsLayer = 'radar-stations-layer';
+  static const _lightningSource = 'lightning-flashes-source';
+  static const _lightningGlowLayer = 'lightning-flashes-glow';
+  static const _lightningSymbolLayer = 'lightning-flashes-symbol';
+  static const _lightningImage = 'lightning-bolt';
   static const _fallbackCameraPosition = CameraPosition(
     target: LatLng(39.5, -98.35),
     zoom: 3.25,
@@ -57,6 +65,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
 
   late final RadarController _radar;
   late final AlertNotificationController _alertNotifications;
+  late final LightningController _lightning;
   late final StartupLocationStore _startupLocationStore;
   late final StartupLocationWriter _startupLocationWriter;
   late final StartupLocationResolver _startupLocationResolver;
@@ -71,14 +80,19 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   bool _pinLocation = false;
   bool _restoreTracking = false;
   bool _baseSourcesInstalled = false;
+  bool _lightningStyleInstalled = false;
   RadarLayerCandidate? _radarSwapAwaitingIdle;
   RadarLayerCandidate? _radarSwapReady;
   int _renderedStationRevision = -1;
   int _renderedAlertRevision = -1;
+  int _renderedLightningRevision = -1;
   bool _styleSyncRunning = false;
   bool _styleSyncPending = false;
   bool _forceStyleSync = false;
+  bool _lightningStyleSyncRunning = false;
+  bool _lightningStyleSyncPending = false;
   bool _handlingAlertTap = false;
+  LightningStatus _lightningUiStatus = LightningStatus.disabled;
   LatLng? _latestUserLocation;
   CameraPosition? _initialCameraPosition;
 
@@ -97,18 +111,22 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     );
     _radar = RadarController()..addListener(_onRadarChanged);
     _alertNotifications = AlertNotificationController();
+    _lightning = LightningController()..addListener(_onLightningChanged);
     unawaited(_prepareInitialCamera());
     unawaited(_radar.initialize());
+    unawaited(_lightning.initialize());
     unawaited(_initializeLocationAndNotifications());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      unawaited(_lightning.setForeground(true));
       unawaited(_radar.resume());
       unawaited(_requestLocation());
       unawaited(_alertNotifications.refreshPermissions());
     } else {
+      unawaited(_lightning.setForeground(false));
       unawaited(_startupLocationWriter.flush());
     }
   }
@@ -176,10 +194,22 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _queueStyleSync();
   }
 
+  void _onLightningChanged() {
+    if (!mounted) return;
+    final nextStatus = _lightning.status;
+    if (_lightningUiStatus != nextStatus) {
+      setState(() => _lightningUiStatus = nextStatus);
+    }
+    // Lightning owns a small persistent GeoJSON source. Never route its fade
+    // ticks through the radar raster swap coordinator.
+    _queueLightningStyleSync();
+  }
+
   void _onMapCreated(MapLibreMapController controller) {
     _map = controller;
     controller.onFeatureTapped.add(_onFeatureTapped);
     _updateNearbyDetailStation(controller.cameraPosition?.target);
+    unawaited(_updateLightningBounds());
     unawaited(_applyStartupCameraFocus());
   }
 
@@ -187,12 +217,16 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _styleGeneration++;
     _styleLoaded = true;
     _baseSourcesInstalled = false;
+    _lightningStyleInstalled = false;
     _radarLayers.reset();
     _clearRadarSwapReadiness();
     _renderedStationRevision = -1;
     _renderedAlertRevision = -1;
+    _renderedLightningRevision = -1;
     _updateNearbyDetailStation(_map?.cameraPosition?.target);
     _queueStyleSync(force: true);
+    _queueLightningStyleSync();
+    unawaited(_updateLightningBounds());
     unawaited(_applyStartupCameraFocus());
     if (_pinLocation && _locationAccess == LocationAccess.granted) {
       unawaited(_setTrackingMode(MyLocationTrackingMode.tracking));
@@ -249,7 +283,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     if (!_styleLoaded || _map == null) return;
     _styleSyncPending = true;
     _forceStyleSync |= force;
-    if (_styleSyncRunning) return;
+    if (_styleSyncRunning || _lightningStyleSyncRunning) return;
     _styleSyncRunning = true;
     unawaited(_drainStyleSync());
   }
@@ -268,8 +302,121 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       }
     } finally {
       _styleSyncRunning = false;
-      if (mounted && _styleSyncPending) _queueStyleSync();
+      if (mounted && _styleSyncPending) {
+        _queueStyleSync();
+      } else if (mounted && _lightningStyleSyncPending) {
+        _queueLightningStyleSync();
+      }
     }
+  }
+
+  void _queueLightningStyleSync() {
+    if (!_styleLoaded || _map == null) return;
+    _lightningStyleSyncPending = true;
+    if (_lightningStyleSyncRunning || _styleSyncRunning) return;
+    _lightningStyleSyncRunning = true;
+    unawaited(_drainLightningStyleSync());
+  }
+
+  Future<void> _drainLightningStyleSync() async {
+    try {
+      while (mounted && _lightningStyleSyncPending) {
+        _lightningStyleSyncPending = false;
+        try {
+          await _syncLightningStyle();
+        } catch (error) {
+          debugPrint('Lightning map update failed: $error');
+        }
+      }
+    } finally {
+      _lightningStyleSyncRunning = false;
+      if (mounted && _styleSyncPending) {
+        _queueStyleSync();
+      } else if (mounted && _lightningStyleSyncPending) {
+        _queueLightningStyleSync();
+      }
+    }
+  }
+
+  Future<void> _syncLightningStyle() async {
+    final map = _map;
+    if (map == null || !_styleLoaded || !_baseSourcesInstalled) return;
+    final styleGeneration = _styleGeneration;
+    if (!_lightningStyleInstalled) {
+      final image = await rootBundle.load('assets/lightning_bolt.png');
+      if (!_isCurrentStyle(map, styleGeneration)) return;
+      await map.addImage(
+        _lightningImage,
+        image.buffer.asUint8List(image.offsetInBytes, image.lengthInBytes),
+      );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
+      await map.addGeoJsonSource(
+        _lightningSource,
+        _emptyFeatureCollection,
+        promoteId: 'id',
+      );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
+      await map.addCircleLayer(
+        _lightningSource,
+        _lightningGlowLayer,
+        const CircleLayerProperties(
+          circleRadius: [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            3,
+            5,
+            8,
+            9,
+            13,
+            15,
+          ],
+          circleColor: '#FFFCF0',
+          circleOpacity: [
+            '*',
+            ['get', 'opacity'],
+            0.34,
+          ],
+          circleBlur: 0.72,
+        ),
+        belowLayerId: _stationsLayer,
+        enableInteraction: false,
+      );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
+      await map.addSymbolLayer(
+        _lightningSource,
+        _lightningSymbolLayer,
+        const SymbolLayerProperties(
+          iconImage: _lightningImage,
+          iconSize: [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            3,
+            0.16,
+            8,
+            0.25,
+            13,
+            0.38,
+          ],
+          iconOpacity: ['get', 'opacity'],
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+          iconPadding: 0,
+        ),
+        belowLayerId: _stationsLayer,
+        enableInteraction: false,
+      );
+      if (!_isCurrentStyle(map, styleGeneration)) return;
+      _lightningStyleInstalled = true;
+      _renderedLightningRevision = -1;
+    }
+
+    final revision = _lightning.revision;
+    if (revision == _renderedLightningRevision) return;
+    await map.setGeoJsonSource(_lightningSource, _lightning.geoJson);
+    if (!_isCurrentStyle(map, styleGeneration)) return;
+    _renderedLightningRevision = revision;
   }
 
   Future<void> _syncStyle({required bool force}) async {
@@ -337,6 +484,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       );
       if (!_isCurrentStyle(map, styleGeneration)) return;
       _baseSourcesInstalled = true;
+      _lightningStyleSyncPending = true;
     }
 
     final stationRevision = _radar.stationRevision;
@@ -691,10 +839,55 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _updateNearbyDetailStation(
       _pinLocation ? _latestUserLocation : _map?.cameraPosition?.target,
     );
+    unawaited(_updateLightningBounds());
     if (_pinLocation && _restoreTracking) {
       _restoreTracking = false;
       unawaited(_setTrackingMode(MyLocationTrackingMode.tracking));
     }
+  }
+
+  Future<void> _updateLightningBounds() async {
+    final map = _map;
+    if (map == null) return;
+    try {
+      final visible = await map.getVisibleRegion();
+      if (!mounted || !identical(_map, map)) return;
+      final subscribed = _lightning.bounds;
+      if (subscribed != null && _containsVisibleRegion(subscribed, visible)) {
+        return;
+      }
+      // Keep a generous subscription around the viewport so normal panning or
+      // Follow-mode movement does not reconnect the live stream. Very wide
+      // world views are capped to the backend contract around the map focus.
+      final focus = map.cameraPosition?.target;
+      final expanded = lightningSubscriptionBounds(
+        west: visible.southwest.longitude,
+        south: visible.southwest.latitude,
+        east: visible.northeast.longitude,
+        north: visible.northeast.latitude,
+        focusLongitude: focus?.longitude,
+        focusLatitude: focus?.latitude,
+      );
+      await _lightning.setBounds(expanded);
+    } catch (error) {
+      debugPrint('Unable to update lightning viewport: $error');
+    }
+  }
+
+  bool _containsVisibleRegion(
+    LightningBounds subscribed,
+    LatLngBounds visible,
+  ) {
+    if (visible.southwest.latitude < subscribed.south ||
+        visible.northeast.latitude > subscribed.north) {
+      return false;
+    }
+    bool containsLongitude(double longitude) =>
+        subscribed.west <= subscribed.east
+        ? longitude >= subscribed.west && longitude <= subscribed.east
+        : longitude >= subscribed.west || longitude <= subscribed.east;
+    return containsLongitude(visible.southwest.longitude) &&
+        containsLongitude(visible.northeast.longitude);
   }
 
   void _onCameraMove(CameraPosition _) {
@@ -783,6 +976,15 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                   loadingSemanticLabel: 'Refreshing weather alerts',
                   onTap: () => _radar.refreshAlerts(userInitiated: true),
                 ),
+              if (_lightning.enabled &&
+                  (_lightningUiStatus == LightningStatus.stale ||
+                      _lightningUiStatus == LightningStatus.unavailable ||
+                      _lightningUiStatus == LightningStatus.error))
+                StatusBanner(
+                  icon: Icons.bolt_rounded,
+                  message: _lightning.statusSummary,
+                  onTap: _showMapLayerSettings,
+                ),
               if (_locationAccess != LocationAccess.granted &&
                   _locationAccess != LocationAccess.checking)
                 StatusBanner(
@@ -824,6 +1026,21 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   bool get _isLandscape =>
       MediaQuery.orientationOf(context) == Orientation.landscape;
 
+  RadarSettingsDestination get _mapLayersSettingsDestination =>
+      RadarSettingsDestination(
+        id: 'map-layers',
+        icon: Icons.layers_outlined,
+        title: 'Map layers',
+        summary: () => 'Lightning · ${lightningSettingsSummary(_lightning)}',
+        listenable: _lightning.uiState,
+        pageBuilder: (context, scrollController, onBack) =>
+            LightningSettingsPage(
+              controller: _lightning,
+              scrollController: scrollController,
+              onBack: onBack,
+            ),
+      );
+
   void _showRadarModes() {
     if (_isLandscape) {
       showLandscapeSidePanel<void>(
@@ -841,27 +1058,29 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   void _showSettings() {
+    _showSettingsPanel();
+  }
+
+  void _showMapLayerSettings() {
+    _showSettingsPanel(initialDestinationId: 'map-layers');
+  }
+
+  void _showSettingsPanel({String? initialDestinationId}) {
     if (_isLandscape) {
       showLandscapeSidePanel<void>(
         context: context,
         barrierLabel: 'Close settings',
-        builder: (context, scrollController) => StatefulBuilder(
-          builder: (context, setPanelState) => RadarSettingsPanel(
-            scrollController: scrollController,
-            landscape: true,
-            notificationController: _alertNotifications,
-            alertTypes: _radar.knownAlertTypes,
-            alertTypeCounts: _radar.alertTypeCounts,
-            isAlertTypeVisible: _radar.isAlertTypeVisible,
-            onAlertTypeChanged: (alertType, visible) {
-              _radar.setAlertTypeVisible(alertType, visible);
-              setPanelState(() {});
-            },
-            onShowAllAlertTypes: () {
-              _radar.showAllAlertTypes();
-              setPanelState(() {});
-            },
-          ),
+        builder: (context, scrollController) => RadarSettingsPanel(
+          scrollController: scrollController,
+          landscape: true,
+          notificationController: _alertNotifications,
+          additionalDestinations: [_mapLayersSettingsDestination],
+          initialDestinationId: initialDestinationId,
+          alertTypes: _radar.knownAlertTypes,
+          alertTypeCounts: _radar.alertTypeCounts,
+          isAlertTypeVisible: _radar.isAlertTypeVisible,
+          onAlertTypeChanged: _radar.setAlertTypeVisible,
+          onShowAllAlertTypes: _radar.showAllAlertTypes,
         ),
       );
       return;
@@ -874,22 +1093,16 @@ class _RadarMapScreenState extends State<RadarMapScreen>
         initialChildSize: 0.72,
         minChildSize: 0.42,
         maxChildSize: 0.94,
-        builder: (context, scrollController) => StatefulBuilder(
-          builder: (context, setSheetState) => RadarSettingsPanel(
-            scrollController: scrollController,
-            notificationController: _alertNotifications,
-            alertTypes: _radar.knownAlertTypes,
-            alertTypeCounts: _radar.alertTypeCounts,
-            isAlertTypeVisible: _radar.isAlertTypeVisible,
-            onAlertTypeChanged: (alertType, visible) {
-              _radar.setAlertTypeVisible(alertType, visible);
-              setSheetState(() {});
-            },
-            onShowAllAlertTypes: () {
-              _radar.showAllAlertTypes();
-              setSheetState(() {});
-            },
-          ),
+        builder: (context, scrollController) => RadarSettingsPanel(
+          scrollController: scrollController,
+          notificationController: _alertNotifications,
+          additionalDestinations: [_mapLayersSettingsDestination],
+          initialDestinationId: initialDestinationId,
+          alertTypes: _radar.knownAlertTypes,
+          alertTypeCounts: _radar.alertTypeCounts,
+          isAlertTypeVisible: _radar.isAlertTypeVisible,
+          onAlertTypeChanged: _radar.setAlertTypeVisible,
+          onShowAllAlertTypes: _radar.showAllAlertTypes,
         ),
       ),
     );
@@ -1022,7 +1235,9 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_startupLocationWriter.flush());
     _radar.removeListener(_onRadarChanged);
+    _lightning.removeListener(_onLightningChanged);
     _radar.dispose();
+    _lightning.dispose();
     _alertNotifications.dispose();
     _map?.dispose();
     super.dispose();

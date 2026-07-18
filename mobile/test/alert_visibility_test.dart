@@ -40,6 +40,8 @@ void main() {
         ),
         ['tornado'],
       );
+      final originalTornadoFeature =
+          (controller.alertGeoJson['features'] as List).single;
 
       final revision = controller.alertRevision;
       controller.setAlertTypeVisible('Air Quality Alert', true);
@@ -47,6 +49,10 @@ void main() {
 
       expect(controller.alerts, hasLength(2));
       expect(controller.alertGeoJson['features'], hasLength(2));
+      expect(
+        (controller.alertGeoJson['features'] as List).last,
+        same(originalTornadoFeature),
+      );
       expect(controller.alertRevision, revision + 1);
       expect(store.saved.hiddenTypes, isEmpty);
       controller.dispose();

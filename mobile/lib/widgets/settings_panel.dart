@@ -1,11 +1,42 @@
 import 'package:flutter/material.dart';
 
 import '../controllers/alert_notification_controller.dart';
+import '../models/alert_type_category.dart';
 import '../theme/flexoki_theme.dart';
 import 'alert_notification_settings.dart';
+import 'alert_type_picker.dart';
 
-/// Reusable application settings content for a modal sheet or full page.
-class RadarSettingsPanel extends StatelessWidget {
+typedef RadarSettingsDestinationPageBuilder =
+    Widget Function(
+      BuildContext context,
+      ScrollController? scrollController,
+      VoidCallback onBack,
+    );
+
+/// An optional settings destination supplied by a map feature.
+///
+/// This keeps the landing page extensible without placing feature-specific
+/// controls in the already compact top-level menu.
+class RadarSettingsDestination {
+  const RadarSettingsDestination({
+    required this.id,
+    required this.icon,
+    required this.title,
+    required this.summary,
+    required this.pageBuilder,
+    this.listenable,
+  });
+
+  final String id;
+  final IconData icon;
+  final String title;
+  final String Function() summary;
+  final RadarSettingsDestinationPageBuilder pageBuilder;
+  final Listenable? listenable;
+}
+
+/// Reusable application settings content for a modal sheet or side panel.
+class RadarSettingsPanel extends StatefulWidget {
   const RadarSettingsPanel({
     required this.alertTypes,
     required this.alertTypeCounts,
@@ -13,6 +44,8 @@ class RadarSettingsPanel extends StatelessWidget {
     required this.onAlertTypeChanged,
     required this.onShowAllAlertTypes,
     this.notificationController,
+    this.additionalDestinations = const [],
+    this.initialDestinationId,
     this.scrollController,
     this.landscape = false,
     super.key,
@@ -24,308 +57,337 @@ class RadarSettingsPanel extends StatelessWidget {
   final void Function(String alertType, bool visible) onAlertTypeChanged;
   final VoidCallback onShowAllAlertTypes;
   final AlertNotificationController? notificationController;
+  final List<RadarSettingsDestination> additionalDestinations;
+  final String? initialDestinationId;
   final ScrollController? scrollController;
   final bool landscape;
 
   @override
-  Widget build(BuildContext context) {
-    final hasHiddenType = alertTypes.any((type) => !isAlertTypeVisible(type));
-    if (landscape) {
-      return _buildLandscape(context, hasHiddenType);
+  State<RadarSettingsPanel> createState() => _RadarSettingsPanelState();
+}
+
+enum _SettingsPage {
+  home,
+  mapAlerts,
+  mapAlertTypes,
+  notifications,
+  notificationAlertTypes,
+  additional,
+}
+
+class _RadarSettingsPanelState extends State<RadarSettingsPanel> {
+  _SettingsPage _page = _SettingsPage.home;
+  AlertTypeCategory? _category;
+  RadarSettingsDestination? _additionalDestination;
+
+  @override
+  void initState() {
+    super.initState();
+    final initialId = widget.initialDestinationId;
+    if (initialId == null) return;
+    for (final destination in widget.additionalDestinations) {
+      if (destination.id != initialId) continue;
+      _additionalDestination = destination;
+      _page = _SettingsPage.additional;
+      break;
     }
+  }
+
+  void _open(_SettingsPage page, {AlertTypeCategory? category}) {
+    setState(() {
+      _page = page;
+      _category = category;
+      if (page != _SettingsPage.additional) _additionalDestination = null;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final controller = widget.scrollController;
+      if (controller?.hasClients ?? false) controller!.jumpTo(0);
+    });
+  }
+
+  void _back() {
+    switch (_page) {
+      case _SettingsPage.mapAlertTypes:
+        _open(_SettingsPage.mapAlerts);
+      case _SettingsPage.notificationAlertTypes:
+        _open(_SettingsPage.notifications);
+      case _SettingsPage.mapAlerts || _SettingsPage.notifications:
+        _open(_SettingsPage.home);
+      case _SettingsPage.additional:
+        _open(_SettingsPage.home);
+      case _SettingsPage.home:
+        break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: _page == _SettingsPage.home,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _back();
+      },
+      child: KeyedSubtree(
+        key: const ValueKey('radar-settings-panel'),
+        child: switch (_page) {
+          _SettingsPage.home => _buildHome(context),
+          _SettingsPage.mapAlerts => _buildMapAlerts(context),
+          _SettingsPage.mapAlertTypes => _buildMapAlertTypes(),
+          _SettingsPage.notifications => _buildNotifications(),
+          _SettingsPage.notificationAlertTypes =>
+            _buildNotificationAlertTypes(),
+          _SettingsPage.additional => _buildAdditionalDestination(context),
+        },
+      ),
+    );
+  }
+
+  Widget _buildHome(BuildContext context) {
+    final visibleCount = widget.alertTypes
+        .where(widget.isAlertTypeVisible)
+        .length;
     return ListView(
-      key: const ValueKey('radar-settings-panel'),
-      controller: scrollController,
-      padding: const EdgeInsets.fromLTRB(18, 2, 18, 28),
+      key: const ValueKey('settings-page-home'),
+      controller: widget.scrollController,
+      padding: const EdgeInsets.only(bottom: 28),
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Settings',
-                style: Theme.of(context).textTheme.headlineSmall,
+        const SettingsPageHeader(title: 'Settings'),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: _horizontalPadding),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Choose a section to change map layers, alert display, and background notifications.',
+                style: TextStyle(color: Flexoki.base500, fontSize: 13),
               ),
-            ),
-            TextButton(
-              onPressed: hasHiddenType ? onShowAllAlertTypes : null,
-              child: const Text('Show all'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        if (notificationController case final controller?)
-          AlertNotificationSettingsSection(
-            controller: controller,
-            learnedAlertTypes: alertTypes,
-          ),
-        const Text(
-          'WEATHER ALERTS',
-          style: TextStyle(
-            color: Flexoki.base500,
-            fontSize: 11,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 1.1,
-          ),
-        ),
-        const SizedBox(height: 5),
-        const Text(
-          'Choose which alert types appear on the map and in the active-alert count.',
-          style: TextStyle(color: Flexoki.base500, fontSize: 13),
-        ),
-        const SizedBox(height: 12),
-        if (alertTypes.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 24),
-            child: Center(
-              child: Text(
-                'Alert types will appear after live alerts are loaded.',
-                style: TextStyle(color: Flexoki.base500),
+              const SizedBox(height: 14),
+              _SettingsDestinationTile(
+                key: const ValueKey('settings-destination-map-alerts'),
+                icon: Icons.warning_amber_rounded,
+                title: 'Map alerts',
+                summary: widget.alertTypes.isEmpty
+                    ? 'Alert types appear after live alerts load'
+                    : '$visibleCount of ${widget.alertTypes.length} types shown',
+                onTap: () => _open(_SettingsPage.mapAlerts),
               ),
-            ),
-          )
-        else
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: Flexoki.base100,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Flexoki.base200),
-            ),
-            child: Column(
-              children: [
-                for (var index = 0; index < alertTypes.length; index++) ...[
-                  if (index > 0)
-                    const Divider(height: 1, indent: 16, endIndent: 16),
-                  _AlertTypeSwitch(
-                    alertType: alertTypes[index],
-                    activeCount: alertTypeCounts[alertTypes[index]] ?? 0,
-                    visible: isAlertTypeVisible(alertTypes[index]),
-                    onChanged: (visible) =>
-                        onAlertTypeChanged(alertTypes[index], visible),
-                  ),
-                ],
+              for (final destination in widget.additionalDestinations) ...[
+                const SizedBox(height: 10),
+                _buildAdditionalDestinationTile(destination),
               ],
-            ),
+              if (widget.notificationController case final controller?) ...[
+                const SizedBox(height: 10),
+                ListenableBuilder(
+                  listenable: controller,
+                  builder: (context, _) => _SettingsDestinationTile(
+                    key: const ValueKey('settings-destination-notifications'),
+                    icon: Icons.notifications_outlined,
+                    title: 'Background notifications',
+                    summary: alertNotificationSettingsSummary(controller),
+                    onTap: () => _open(_SettingsPage.notifications),
+                  ),
+                ),
+              ],
+            ],
           ),
-        const SizedBox(height: 14),
-        const Text(
-          'Hidden alerts remain active National Weather Service products; this setting only changes their display in HyprRadar.',
-          style: TextStyle(color: Flexoki.base500, fontSize: 12),
         ),
       ],
     );
   }
 
-  Widget _buildLandscape(BuildContext context, bool hasHiddenType) {
-    final rowCount = (alertTypes.length / 2).ceil();
-    final notificationItemCount = notificationController == null ? 0 : 1;
-    return Column(
-      key: const ValueKey('radar-settings-panel'),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+  Widget _buildAdditionalDestinationTile(RadarSettingsDestination destination) {
+    Widget tile() => _SettingsDestinationTile(
+      key: ValueKey('settings-destination-${destination.id}'),
+      icon: destination.icon,
+      title: destination.title,
+      summary: destination.summary(),
+      onTap: () {
+        _additionalDestination = destination;
+        _open(_SettingsPage.additional);
+      },
+    );
+    final listenable = destination.listenable;
+    return listenable == null
+        ? tile()
+        : ListenableBuilder(
+            listenable: listenable,
+            builder: (context, _) => tile(),
+          );
+  }
+
+  Widget _buildMapAlerts(BuildContext context) {
+    final groups = groupAlertTypes(widget.alertTypes);
+    final hasHiddenType = widget.alertTypes.any(
+      (type) => !widget.isAlertTypeVisible(type),
+    );
+    return ListView(
+      key: const ValueKey('settings-page-map-alerts'),
+      controller: widget.scrollController,
+      padding: const EdgeInsets.only(bottom: 28),
       children: [
+        SettingsPageHeader(
+          title: 'Map alerts',
+          onBack: _back,
+          action: TextButton(
+            key: const ValueKey('show-all-map-alert-types'),
+            onPressed: hasHiddenType
+                ? () {
+                    widget.onShowAllAlertTypes();
+                    setState(() {});
+                  }
+                : null,
+            child: const Text('Show all'),
+          ),
+        ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
-          child: Row(
+          padding: EdgeInsets.symmetric(horizontal: _horizontalPadding),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: Text(
-                  'Settings',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
+              const Text(
+                'Choose which National Weather Service alert types appear on the map and in the active-alert count.',
+                style: TextStyle(color: Flexoki.base500, fontSize: 13),
               ),
-              TextButton(
-                onPressed: hasHiddenType ? onShowAllAlertTypes : null,
-                child: const Text('Show all'),
+              const SizedBox(height: 14),
+              if (groups.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(
+                    child: Text(
+                      'Alert types will appear after live alerts are loaded.',
+                      style: TextStyle(color: Flexoki.base500),
+                    ),
+                  ),
+                )
+              else
+                for (final group in groups)
+                  AlertTypeCategoryTile(
+                    category: group.category,
+                    keyPrefix: 'map-alert-category',
+                    summary: _mapGroupSummary(group.types),
+                    onTap: () => _open(
+                      _SettingsPage.mapAlertTypes,
+                      category: group.category,
+                    ),
+                  ),
+              const SizedBox(height: 4),
+              const Text(
+                'Hidden alerts remain active NWS products. This setting changes only their display in HyprRadar.',
+                style: TextStyle(color: Flexoki.base500, fontSize: 12),
               ),
             ],
           ),
         ),
-        const Divider(height: 1),
-        Expanded(
-          child: ListView.builder(
-            key: const ValueKey('settings-alert-types-scroll'),
-            controller: scrollController,
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
-            itemCount: notificationItemCount + rowCount + 2,
-            itemBuilder: (context, itemIndex) {
-              if (notificationController case final controller?
-                  when itemIndex == 0) {
-                return AlertNotificationSettingsSection(
-                  controller: controller,
-                  learnedAlertTypes: alertTypes,
-                  landscape: true,
-                );
-              }
-              final contentIndex = itemIndex - notificationItemCount;
-              if (contentIndex == 0) return _landscapeAlertIntro();
-              if (contentIndex == rowCount + 1) {
-                return Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    alertTypes.isEmpty
-                        ? 'Alert types will appear after live alerts are loaded.'
-                        : 'Hidden alerts remain active National Weather Service products; this setting only changes their display in HyprRadar.',
-                    style: const TextStyle(
-                      color: Flexoki.base500,
-                      fontSize: 12,
-                    ),
-                  ),
-                );
-              }
-              final rowIndex = contentIndex - 1;
-              final firstIndex = rowIndex * 2;
-              final secondIndex = firstIndex + 1;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(
-                        child: _LandscapeAlertTypeTile(
-                          alertType: alertTypes[firstIndex],
-                          activeCount:
-                              alertTypeCounts[alertTypes[firstIndex]] ?? 0,
-                          visible: isAlertTypeVisible(alertTypes[firstIndex]),
-                          onChanged: (visible) => onAlertTypeChanged(
-                            alertTypes[firstIndex],
-                            visible,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: secondIndex < alertTypes.length
-                            ? _LandscapeAlertTypeTile(
-                                alertType: alertTypes[secondIndex],
-                                activeCount:
-                                    alertTypeCounts[alertTypes[secondIndex]] ??
-                                    0,
-                                visible: isAlertTypeVisible(
-                                  alertTypes[secondIndex],
-                                ),
-                                onChanged: (visible) => onAlertTypeChanged(
-                                  alertTypes[secondIndex],
-                                  visible,
-                                ),
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
       ],
     );
   }
 
-  Widget _landscapeAlertIntro() {
-    return const Padding(
-      padding: EdgeInsets.only(bottom: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'WEATHER ALERTS',
-            style: TextStyle(
-              color: Flexoki.base500,
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.1,
-            ),
-          ),
-          SizedBox(height: 3),
-          Text(
-            'Choose which alert types appear on the map.',
-            style: TextStyle(color: Flexoki.base500, fontSize: 12),
-          ),
-        ],
+  String _mapGroupSummary(Iterable<String> types) {
+    final typeList = types.toList(growable: false);
+    final visible = typeList.where(widget.isAlertTypeVisible).length;
+    final active = typeList.fold<int>(
+      0,
+      (count, type) => count + (widget.alertTypeCounts[type] ?? 0),
+    );
+    final activeSummary = active == 1
+        ? '1 active alert'
+        : '$active active alerts';
+    return '$visible of ${typeList.length} shown · $activeSummary';
+  }
+
+  Widget _buildMapAlertTypes() {
+    final category = _category ?? AlertTypeCategory.other;
+    final group = groupAlertTypes(
+      widget.alertTypes,
+    ).where((group) => group.category == category).firstOrNull;
+    return AlertTypePicker(
+      key: ValueKey('settings-page-map-${category.storageKey}'),
+      controller: widget.scrollController,
+      header: SettingsPageHeader(
+        title: category.label,
+        onBack: _back,
+        backTooltip: 'Back to map alerts',
+      ),
+      category: category,
+      types: group?.types ?? const [],
+      isSelected: widget.isAlertTypeVisible,
+      semanticAction: 'Show on map',
+      toggleKeyPrefix: 'alert-type',
+      countForType: (type) => widget.alertTypeCounts[type] ?? 0,
+      onChanged: (type, visible) {
+        widget.onAlertTypeChanged(type, visible);
+        if (mounted) setState(() {});
+      },
+      footer: const Text(
+        'Map visibility does not change your background notification choices.',
+        style: TextStyle(color: Flexoki.base500, fontSize: 12),
       ),
     );
   }
+
+  Widget _buildNotifications() {
+    final controller = widget.notificationController;
+    if (controller == null) return _buildHome(context);
+    return AlertNotificationSettingsPage(
+      controller: controller,
+      learnedAlertTypes: widget.alertTypes,
+      scrollController: widget.scrollController,
+      onBack: _back,
+      onCategorySelected: (category) =>
+          _open(_SettingsPage.notificationAlertTypes, category: category),
+    );
+  }
+
+  Widget _buildNotificationAlertTypes() {
+    final controller = widget.notificationController;
+    if (controller == null) return _buildHome(context);
+    return AlertNotificationTypePickerPage(
+      controller: controller,
+      learnedAlertTypes: widget.alertTypes,
+      category: _category ?? AlertTypeCategory.other,
+      scrollController: widget.scrollController,
+      onBack: _back,
+    );
+  }
+
+  Widget _buildAdditionalDestination(BuildContext context) {
+    final destination = _additionalDestination;
+    if (destination == null) return _buildHome(context);
+    return destination.pageBuilder(context, widget.scrollController, _back);
+  }
+
+  double get _horizontalPadding => widget.landscape ? 16 : 18;
 }
 
-class _LandscapeAlertTypeTile extends StatelessWidget {
-  const _LandscapeAlertTypeTile({
-    required this.alertType,
-    required this.activeCount,
-    required this.visible,
-    required this.onChanged,
+class _SettingsDestinationTile extends StatelessWidget {
+  const _SettingsDestinationTile({
+    required this.icon,
+    required this.title,
+    required this.summary,
+    required this.onTap,
+    super.key,
   });
 
-  final String alertType;
-  final int activeCount;
-  final bool visible;
-  final ValueChanged<bool> onChanged;
+  final IconData icon;
+  final String title;
+  final String summary;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Flexoki.base100,
-        borderRadius: BorderRadius.circular(13),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Flexoki.base200),
       ),
-      child: _AlertTypeSwitch(
-        alertType: alertType,
-        activeCount: activeCount,
-        visible: visible,
-        compact: true,
-        onChanged: onChanged,
-      ),
-    );
-  }
-}
-
-class _AlertTypeSwitch extends StatelessWidget {
-  const _AlertTypeSwitch({
-    required this.alertType,
-    required this.activeCount,
-    required this.visible,
-    required this.onChanged,
-    this.compact = false,
-  });
-
-  final String alertType;
-  final int activeCount;
-  final bool visible;
-  final ValueChanged<bool> onChanged;
-  final bool compact;
-
-  @override
-  Widget build(BuildContext context) {
-    return SwitchListTile.adaptive(
-      key: ValueKey('alert-type-$alertType'),
-      value: visible,
-      onChanged: onChanged,
-      dense: compact,
-      visualDensity: compact
-          ? const VisualDensity(horizontal: -1, vertical: -2)
-          : null,
-      title: Text(
-        alertType,
-        maxLines: compact ? 2 : null,
-        overflow: compact ? TextOverflow.ellipsis : null,
-        style: TextStyle(
-          fontSize: compact ? 13 : null,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-      subtitle: compact && activeCount == 0
-          ? null
-          : Text(
-              activeCount == 0
-                  ? 'No active alerts'
-                  : '$activeCount active ${activeCount == 1 ? 'alert' : 'alerts'}',
-              maxLines: compact ? 1 : null,
-              overflow: compact ? TextOverflow.ellipsis : null,
-              style: compact ? const TextStyle(fontSize: 11) : null,
-            ),
-      contentPadding: EdgeInsets.symmetric(
-        horizontal: compact ? 8 : 14,
-        vertical: compact ? 0 : 2,
+      child: ListTile(
+        minTileHeight: 72,
+        leading: Icon(icon, color: Flexoki.cyan, size: 25),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+        subtitle: Text(summary),
+        trailing: const Icon(Icons.chevron_right_rounded),
+        onTap: onTap,
       ),
     );
   }

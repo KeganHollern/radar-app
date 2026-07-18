@@ -27,6 +27,35 @@ to `https://radar.lystic.dev`.
 - `GET /api/v1/radar/latest?product=reflectivity&station=KFWS&elevation=0.5`
 - `GET /api/v1/radar/tiles/{product}/{station}/{elevation}/{z}/{x}/{y}.png?timestamp={version}[&snapshot={signed-aggregate}]`
 - `GET /api/v1/updates` — SSE refresh events; accepts the same selection query as `latest`
+- `GET /api/v1/lightning/latest[?bbox=west,south,east,north]` — latest live GOES GLM flash centroids as GeoJSON in a versioned envelope
+- `GET /api/v1/lightning/updates[?bbox=west,south,east,north]` — SSE snapshot followed by complete live lightning generations
+
+Lightning is sourced directly from the public NOAA GOES-19 East and GOES-18
+West `GLM-L2-LCFA` object feeds. The service lists the current UTC hour every
+five seconds, downloads only exact source objects that fall inside its 90-second
+live window, accepts only flashes whose quality flag is zero, and partitions
+the globe between GOES-East and GOES-West at `-105` and its opposite `+75`
+degree seam. It never exposes a history or timeline. Flash points are GLM's
+approximate satellite-observed centroids for
+total lightning (in-cloud and cloud-to-ground); they are described throughout
+the API as **satellite-detected lightning flashes**, never exact ground strikes.
+
+The optional `bbox` is strict, antimeridian-aware, and limited to 160 degrees
+longitude by 80 degrees latitude. A successful empty response is normal during
+calm weather. `available` and `stale` describe provider health independently of
+whether any flashes are present. NOAA source failures never affect `/readyz` or
+the radar and alert endpoints.
+
+Provider health advances only when an exact GLM object is successfully decoded
+and ingested; a successful bucket listing does not make a frozen product fresh.
+GOES-19 and GOES-18 progress is tracked independently. A bbox reports only the
+satellite partitions it intersects; a seam-spanning bbox can require both,
+while a dateline view can correctly require GOES-West alone. An omitted bbox
+requires both feeds. Multi-source responses use the older required product
+timestamp, so one healthy satellite cannot mask a frozen or missing
+counterpart. A decoded GLM object with zero quality-approved flashes still
+counts as healthy product progress, which keeps calm weather distinct from a
+publication outage.
 
 For the seamless regional-only aggregate use `aggregate/conus/0.5`. A supported
 four-character WSR-88D station can replace `conus` to add high-resolution detail
@@ -127,6 +156,13 @@ weak form produced when an edge proxy compresses the response.
 | `RADAR_METADATA_TTL` | `15s` |
 | `RADAR_STALE_AFTER` | `15m` |
 | `RADAR_UPDATE_POLL` | `15s` |
+| `RADAR_LIGHTNING_ENABLED` | `true` |
+| `RADAR_LIGHTNING_POLL` | `5s` |
+| `RADAR_LIGHTNING_RETENTION` | `90s` |
+| `RADAR_LIGHTNING_STALE_AFTER` | `90s` |
+| `RADAR_LIGHTNING_MAX_FLASHES` | `20000` |
+| `RADAR_LIGHTNING_MAX_OBJECT_MIB` | `8` |
+| `RADAR_LIGHTNING_SEAM_LONGITUDE` | `-105` |
 | `RADAR_CACHE_MAX_ENTRIES` | `2048` |
 | `RADAR_CACHE_MAX_MIB` | `128` |
 | `RADAR_MAX_UPSTREAM_MIB` | `16` |

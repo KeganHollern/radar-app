@@ -181,6 +181,38 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'rapid type changes persist in order without rescheduling active work',
+    () async {
+      final store = _DelayedMemoryStore(
+        AlertNotificationPreferences.defaults().copyWith(
+          onboardingCompleted: true,
+          monitoringEnabled: true,
+        ),
+      );
+      final scheduler = _FakeScheduler();
+      final controller = AlertNotificationController(
+        store: store,
+        permissions: _FakePermissions(_granted),
+        scheduler: scheduler,
+      );
+
+      await controller.initialize();
+      final enable = controller.setAlertTypeEnabled('Air Quality Alert', true);
+      final disable = controller.setAlertTypeEnabled(
+        'Air Quality Alert',
+        false,
+      );
+      await Future.wait([enable, disable]);
+
+      expect(store.snapshots, hasLength(2));
+      expect(store.snapshots.first.isEnabled('Air Quality Alert'), isTrue);
+      expect(store.preferences.isEnabled('Air Quality Alert'), isFalse);
+      expect(scheduler.enabled, [true]);
+      controller.dispose();
+    },
+  );
 }
 
 const _granted = AlertNotificationPermissionSnapshot(
@@ -224,6 +256,36 @@ final class _MemoryStore implements AlertNotificationStore {
 
   @override
   Future<void> savePreferences(AlertNotificationPreferences value) async {
+    preferences = value;
+  }
+}
+
+final class _DelayedMemoryStore implements AlertNotificationStore {
+  _DelayedMemoryStore(this.preferences);
+
+  AlertNotificationPreferences preferences;
+  AlertNotificationLedger ledger = AlertNotificationLedger();
+  final List<AlertNotificationPreferences> snapshots = [];
+  int _saveCount = 0;
+
+  @override
+  Future<AlertNotificationLedger> loadLedger() async => ledger;
+
+  @override
+  Future<AlertNotificationPreferences> loadPreferences() async => preferences;
+
+  @override
+  Future<void> saveLedger(AlertNotificationLedger value) async {
+    ledger = value;
+  }
+
+  @override
+  Future<void> savePreferences(AlertNotificationPreferences value) async {
+    final saveNumber = _saveCount++;
+    if (saveNumber == 0) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    snapshots.add(value);
     preferences = value;
   }
 }

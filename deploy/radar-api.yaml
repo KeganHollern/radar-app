@@ -23,6 +23,15 @@ data:
   RADAR_ALERT_ZONE_MAX_FETCHES: "64"
   RADAR_ALERT_ZONE_CONCURRENCY: "8"
   RADAR_UPDATE_POLL: "15s"
+  # GOES-19 East and GOES-18 West GLM flash centroids. The bucket origins are
+  # fixed trusted defaults in the API; these settings contain no credentials.
+  RADAR_LIGHTNING_ENABLED: "true"
+  RADAR_LIGHTNING_POLL: "5s"
+  RADAR_LIGHTNING_RETENTION: "90s"
+  RADAR_LIGHTNING_STALE_AFTER: "90s"
+  RADAR_LIGHTNING_MAX_FLASHES: "20000"
+  RADAR_LIGHTNING_MAX_OBJECT_MIB: "8"
+  RADAR_LIGHTNING_SEAM_LONGITUDE: "-105"
   RADAR_TILE_TTL: "20s"
   RADAR_METADATA_TTL: "15s"
   # A successfully fetched but old scan is visibly marked stale in the app.

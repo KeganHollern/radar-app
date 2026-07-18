@@ -15,8 +15,22 @@ void main() {
       final controller = await _controller(_denied);
       await _pumpSettings(tester, controller);
 
+      await tester.tap(
+        find.byKey(const ValueKey('settings-destination-notifications')),
+      );
+      await tester.pumpAndSettle();
+
       expect(find.text('Notifications are disabled'), findsOneWidget);
       expect(find.text('Enable permissions'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('notification-alert-type-Tornado Warning')),
+        findsNothing,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('notification-alert-category-storms-wind')),
+      );
+      await tester.pumpAndSettle();
       final tornado = tester.widget<SwitchListTile>(
         find.byKey(const ValueKey('notification-alert-type-Tornado Warning')),
       );
@@ -32,6 +46,11 @@ void main() {
     final controller = await _controller(_granted);
     await _pumpSettings(tester, controller);
 
+    await tester.tap(
+      find.byKey(const ValueKey('settings-destination-notifications')),
+    );
+    await tester.pumpAndSettle();
+
     expect(find.text('Near me'), findsOneWidget);
     expect(controller.isAlertTypeEnabled('Tornado Warning'), isTrue);
     expect(controller.isAlertTypeEnabled('Air Quality Alert'), isFalse);
@@ -41,15 +60,22 @@ void main() {
     expect(controller.preferences.scope, AlertNotificationScope.nationwide);
 
     await tester.tap(
+      find.byKey(const ValueKey('notification-alert-category-heat-fire-air')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
       find.byKey(const ValueKey('notification-alert-type-Air Quality Alert')),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(controller.isAlertTypeEnabled('Air Quality Alert'), isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('settings-page-back')));
+    await tester.pumpAndSettle();
 
     await tester.tap(
       find.byKey(const ValueKey('disable-all-alert-notifications')),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(controller.preferences.enabledTypes, isEmpty);
     expect(
       find.text(

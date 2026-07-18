@@ -74,6 +74,11 @@ void main() {
     expect(find.text('© OpenMapTiles'), findsOneWidget);
     expect(find.text('© OpenStreetMap contributors'), findsOneWidget);
     expect(find.text('NOAA / National Weather Service'), findsOneWidget);
+    expect(find.text('NOAA GOES-R GLM'), findsOneWidget);
+    expect(
+      find.textContaining('not exact ground strikes or a proximity alarm'),
+      findsOneWidget,
+    );
     expect(
       find.textContaining('not affiliated with or endorsed'),
       findsOneWidget,
