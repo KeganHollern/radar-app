@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -125,17 +126,69 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	result, err := s.fetcher.Get(r.Context(), "alerts:"+target, target, "application/geo+json", s.config.AlertTTL, "application/geo+json", "application/json")
+	raw, err := s.fetcher.Get(r.Context(), "alerts:"+target, target, "application/geo+json", s.config.AlertTTL, "application/geo+json", "application/json")
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "upstream_unavailable", err.Error())
 		return
 	}
-	body, err := s.enrichAlerts(r.Context(), result.Value.Body)
+	result, err := s.enrichedAlerts(r.Context(), target, raw)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "invalid_upstream_response", err.Error())
 		return
 	}
-	writeCached(w, r, http.StatusOK, body, "application/geo+json", result, "public, max-age=10, stale-if-error=300")
+	writeCached(w, r, http.StatusOK, result.Value.Body, "application/geo+json", result, "public, max-age=10, stale-if-error=300")
+}
+
+// enrichedAlerts coalesces and briefly caches the expensive national alert
+// normalization pass. Each alert scope owns one stable derived-cache slot, and
+// the immutable upstream body hash is its source revision. This bounds memory
+// while ensuring a changed active-alert collection rebuilds immediately.
+// Keeping the derived TTL equal to AlertTTL still lets unchanged collections
+// make bounded progress resolving previously uncached zone geometry.
+func (s *Server) enrichedAlerts(ctx context.Context, target string, raw upstream.Result) (upstream.Result, error) {
+	scopeHash := sha256.Sum256([]byte(target))
+	revisionHash := sha256.Sum256(raw.Value.Body)
+	key := "alerts-enriched:" + hex.EncodeToString(scopeHash[:])
+	revision := hex.EncodeToString(revisionHash[:])
+	result, err := s.fetcher.DeriveVersioned(ctx, key, revision, s.config.AlertTTL, "application/geo+json", func(buildCtx context.Context) (upstream.Result, error) {
+		body, err := s.enrichAlerts(buildCtx, raw.Value.Body)
+		if err != nil {
+			return upstream.Result{}, err
+		}
+		return upstream.Result{Value: cache.Value{
+			Body:         body,
+			FetchedAt:    raw.Value.FetchedAt,
+			CheckedAt:    raw.Value.CheckedAt,
+			LastModified: raw.Value.LastModified,
+		}, State: raw.State}, nil
+	})
+	if err != nil {
+		return upstream.Result{}, err
+	}
+
+	if result.Value.SourceVersion != revision {
+		if result.State != cache.Stale {
+			return upstream.Result{}, errors.New("derived alerts do not match the requested source revision")
+		}
+		// A failed new revision may explicitly fall back to the previous
+		// normalized collection. It stays stale with its original provenance.
+		return result, nil
+	}
+
+	// Normalized-body freshness still belongs to the current NWS collection.
+	// Refresh that provenance on a 304 without rebuilding identical geometry,
+	// but never hide an explicit stale fallback from a failed normalization.
+	if result.State != cache.Stale {
+		result.State = raw.State
+	}
+	if !raw.Value.FetchedAt.IsZero() {
+		result.Value.FetchedAt = raw.Value.FetchedAt
+	}
+	if !raw.Value.CheckedAt.IsZero() {
+		result.Value.CheckedAt = raw.Value.CheckedAt
+	}
+	result.Value.LastModified = raw.Value.LastModified
+	return result, nil
 }
 
 func (s *Server) latest(w http.ResponseWriter, r *http.Request) {
@@ -424,19 +477,56 @@ func writeCached(w http.ResponseWriter, r *http.Request, status int, body []byte
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("X-Radar-Cache", string(result.State))
-	w.Header().Set("X-Data-Fetched-At", result.Value.FetchedAt.Format(time.RFC3339Nano))
+	if !result.Value.FetchedAt.IsZero() {
+		w.Header().Set("X-Data-Fetched-At", result.Value.FetchedAt.UTC().Format(time.RFC3339Nano))
+	}
+	if !result.Value.CheckedAt.IsZero() {
+		w.Header().Set("X-Data-Checked-At", result.Value.CheckedAt.UTC().Format(time.RFC3339Nano))
+	}
 	hash := sha256.Sum256(body)
 	etag := `"` + hex.EncodeToString(hash[:8]) + `"`
 	w.Header().Set("ETag", etag)
 	if result.Value.LastModified != "" {
 		w.Header().Set("Last-Modified", result.Value.LastModified)
 	}
-	if r.Header.Get("If-None-Match") == etag {
+	if matchesIfNoneMatch(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// GET and HEAD use weak comparison for If-None-Match. Cloudflare weakens the
+// origin ETag when it compresses a response, so accepting W/"tag" as equivalent
+// to "tag" is required to avoid retransferring unchanged alert collections.
+func matchesIfNoneMatch(header, current string) bool {
+	currentOpaque, ok := opaqueETag(current)
+	if !ok {
+		return false
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		opaque, valid := opaqueETag(candidate)
+		if valid && opaque == currentOpaque {
+			return true
+		}
+	}
+	return false
+}
+
+func opaqueETag(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "W/") {
+		value = strings.TrimSpace(strings.TrimPrefix(value, "W/"))
+	}
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return "", false
+	}
+	return value, true
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -451,15 +541,33 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	bytes       int64
+	wroteHeader bool
 }
 
 func (w *statusWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
 }
 
+func (w *statusWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	written, err := w.ResponseWriter.Write(body)
+	w.bytes += int64(written)
+	return written, err
+}
+
 func (w *statusWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -470,7 +578,22 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		started := time.Now()
 		wrapped := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
-		s.logger.Info("request", "method", r.Method, "path", r.URL.Path, "status", wrapped.status, "duration_ms", time.Since(started).Milliseconds())
+		attributes := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", wrapped.status,
+			"duration_ms", time.Since(started).Milliseconds(),
+			"response_bytes", wrapped.bytes,
+		}
+		if state := wrapped.Header().Get("X-Radar-Cache"); state != "" {
+			attributes = append(attributes, "cache_state", state)
+		}
+		if raw := wrapped.Header().Get("X-Data-Checked-At"); raw != "" {
+			if checkedAt, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+				attributes = append(attributes, "data_checked_age_seconds", max(0, time.Since(checkedAt).Seconds()))
+			}
+		}
+		s.logger.Info("request", attributes...)
 	})
 }
 
@@ -491,7 +614,7 @@ func (s *Server) headers(next http.Handler) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, If-None-Match, Last-Event-ID")
-		w.Header().Set("Access-Control-Expose-Headers", "ETag, Last-Modified, X-Data-Fetched-At, X-Radar-Cache")
+		w.Header().Set("Access-Control-Expose-Headers", "ETag, Last-Modified, X-Data-Fetched-At, X-Data-Checked-At, X-Radar-Cache")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

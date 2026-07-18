@@ -96,6 +96,16 @@ bounds are preserved. The response marks these shapes with
 `radarGeometrySimplified` and `radarGeometrySimplifyToleranceDegrees`. Inline NWS
 alert polygons are not simplified.
 
+Alert normalization is coalesced into one bounded cache slot per query scope.
+The raw NWS collection hash is the slot's source revision, so a changed active
+set rebuilds immediately while identical concurrent requests share the same
+zone-enrichment pass. An unchanged collection is rebuilt after the alert TTL so
+additional bounded zone batches can still resolve. If a new collection cannot
+be normalized, the last valid collection is served explicitly as stale with its
+original fetch/check provenance; malformed data never replaces the last-good
+body. Conditional requests accept both strong and weak ETags, including the
+weak form produced when an edge proxy compresses the response.
+
 ## Important configuration
 
 | Environment variable | Default |

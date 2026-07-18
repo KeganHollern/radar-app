@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,18 +40,82 @@ func TestWriteCachedHonorsETag(t *testing.T) {
 	body := []byte("same response")
 	first := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	result := upstream.Result{Value: cache.Value{FetchedAt: time.Unix(100, 0)}, State: cache.Hit}
+	result := upstream.Result{Value: cache.Value{
+		FetchedAt: time.Unix(100, 0),
+		CheckedAt: time.Unix(120, 0),
+	}, State: cache.Hit}
 	writeCached(first, request, http.StatusOK, body, "text/plain", result, "public, max-age=10")
 	if first.Code != http.StatusOK || first.Header().Get("ETag") == "" {
 		t.Fatalf("unexpected initial response: %d %#v", first.Code, first.Header())
 	}
+	if got := first.Header().Get("X-Data-Checked-At"); got != time.Unix(120, 0).UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("X-Data-Checked-At = %q", got)
+	}
 
-	second := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodGet, "/", nil)
-	request.Header.Set("If-None-Match", first.Header().Get("ETag"))
-	writeCached(second, request, http.StatusOK, body, "text/plain", result, "public, max-age=10")
-	if second.Code != http.StatusNotModified || second.Body.Len() != 0 {
-		t.Fatalf("unexpected conditional response: %d %q", second.Code, second.Body.String())
+	etag := first.Header().Get("ETag")
+	tests := []struct {
+		name       string
+		header     string
+		wantStatus int
+	}{
+		{name: "strong", header: etag, wantStatus: http.StatusNotModified},
+		{name: "cloudflare weak", header: "W/" + etag, wantStatus: http.StatusNotModified},
+		{name: "list", header: `"other", W/` + etag, wantStatus: http.StatusNotModified},
+		{name: "wildcard", header: "*", wantStatus: http.StatusNotModified},
+		{name: "different", header: `W/"different"`, wantStatus: http.StatusOK},
+		{name: "malformed", header: strings.Trim(etag, `"`), wantStatus: http.StatusOK},
+		{name: "empty", wantStatus: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set("If-None-Match", test.header)
+			writeCached(response, request, http.StatusOK, body, "text/plain", result, "public, max-age=10")
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
+			}
+			if test.wantStatus == http.StatusNotModified && response.Body.Len() != 0 {
+				t.Fatalf("304 body = %q", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestAccessLogReportsWrittenBytesAndCacheFreshness(t *testing.T) {
+	var output bytes.Buffer
+	server := &Server{logger: slog.New(slog.NewJSONHandler(&output, nil))}
+	checkedAt := time.Now().UTC().Add(-2 * time.Second)
+	handler := server.accessLog(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Radar-Cache", string(cache.Hit))
+		w.Header().Set("X-Data-Checked-At", checkedAt.Format(time.RFC3339Nano))
+		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, "alert body")
+	}))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/alerts", nil))
+
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["status"] != float64(http.StatusAccepted) {
+		t.Fatalf("logged status = %#v", entry["status"])
+	}
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("response status = %d", response.Code)
+	}
+	if entry["response_bytes"] != float64(len("alert body")) {
+		t.Fatalf("logged response bytes = %#v", entry["response_bytes"])
+	}
+	if entry["cache_state"] != string(cache.Hit) {
+		t.Fatalf("logged cache state = %#v", entry["cache_state"])
+	}
+	age, ok := entry["data_checked_age_seconds"].(float64)
+	if !ok || age < 1 || age > 10 {
+		t.Fatalf("logged checked age = %#v", entry["data_checked_age_seconds"])
 	}
 }
 

@@ -271,6 +271,10 @@ upstream URLs or accept an unrestricted WMS query string from clients.
 ### Refresh contract
 
 - Poll alert data centrally no faster than every 30 seconds.
+- Normalize each alert revision once per backend replica, use weak conditional
+  ETag comparison for compressed clients, and expose both source fetch and
+  latest-check timestamps. Mobile alert requests join in-flight work; a manual
+  retry during an automatic request queues at most one immediate follow-up.
 - Poll current WMS metadata on the configured interval; refresh displayed tiles
   only when the upstream observation/generation changes.
 - Use the server-sent-event refresh stream for prompt foreground updates, with

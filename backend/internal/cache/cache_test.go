@@ -24,3 +24,17 @@ func TestCacheFreshStaleExpiredAndLRU(t *testing.T) {
 		t.Fatal("wanted least-recently-used item evicted")
 	}
 }
+
+func TestCacheCountsSourceVersionTowardByteLimit(t *testing.T) {
+	now := time.Now().UTC()
+	c := New(1, 4)
+	c.Put("k", Value{
+		Body:          []byte("b"),
+		SourceVersion: "rev",
+		ExpiresAt:     now.Add(time.Minute),
+		StaleUntil:    now.Add(time.Minute),
+	})
+	if _, _, ok := c.Get("k", now); ok {
+		t.Fatal("entry exceeding the byte limit through its source revision was cached")
+	}
+}

@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -164,6 +165,187 @@ func TestFetcherDeriveCachesAndCoalescesBuilds(t *testing.T) {
 	}
 	if cached.State != cache.Hit || builds.Load() != 1 {
 		t.Fatalf("cached derived result state = %q, builds = %d", cached.State, builds.Load())
+	}
+}
+
+func TestFetcherDeriveVersionedReplacesOneStableCacheSlot(t *testing.T) {
+	responseCache := cache.New(1, 1<<20)
+	fetcher := NewFetcher(http.DefaultClient, responseCache, "radar-test", 1<<20, time.Minute)
+	var builds atomic.Int32
+	checkedAt := time.Now().UTC()
+	build := func(version string, checked time.Time) func(context.Context) (Result, error) {
+		return func(context.Context) (Result, error) {
+			builds.Add(1)
+			return Result{Value: cache.Value{
+				Body:      []byte(version),
+				FetchedAt: checked,
+				CheckedAt: checked,
+			}}, nil
+		}
+	}
+
+	if _, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", time.Minute, "application/json", build("v1", checkedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v2", time.Minute, "application/json", build("v2", checkedAt.Add(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+
+	cached, ok := fetcher.Cached("alerts")
+	if !ok {
+		t.Fatal("stable derived cache slot is missing")
+	}
+	if cached.Value.SourceVersion != "v2" || string(cached.Value.Body) != "v2" {
+		t.Fatalf("cached version = %q body = %q", cached.Value.SourceVersion, cached.Value.Body)
+	}
+	if builds.Load() != 2 {
+		t.Fatalf("versioned builds = %d, want 2", builds.Load())
+	}
+}
+
+func TestFetcherDeriveVersionedWaiterSurvivesOwnerCancellation(t *testing.T) {
+	fetcher := NewFetcher(http.DefaultClient, cache.New(8, 1<<20), "radar-test", 1<<20, time.Minute)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	ownerError := make(chan error, 1)
+	go func() {
+		_, err := fetcher.DeriveVersioned(ownerCtx, "alerts", "v1", time.Minute, "application/json", func(context.Context) (Result, error) {
+			close(started)
+			<-release
+			return Result{Value: cache.Value{Body: []byte("v1"), CheckedAt: time.Unix(1, 0)}}, nil
+		})
+		ownerError <- err
+	}()
+	<-started
+
+	waiterResult := make(chan Result, 1)
+	waiterError := make(chan error, 1)
+	go func() {
+		result, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v2", time.Minute, "application/json", func(context.Context) (Result, error) {
+			return Result{Value: cache.Value{Body: []byte("v2"), CheckedAt: time.Unix(2, 0)}}, nil
+		})
+		waiterResult <- result
+		waiterError <- err
+	}()
+
+	cancelOwner()
+	if err := <-ownerError; !errors.Is(err, context.Canceled) {
+		t.Fatalf("owner error = %v, want context cancellation", err)
+	}
+	close(release)
+
+	select {
+	case err := <-waiterError:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter remained blocked after detached owner build completed")
+	}
+	result := <-waiterResult
+	if result.Value.SourceVersion != "v2" || string(result.Value.Body) != "v2" {
+		t.Fatalf("waiter received version = %q body = %q", result.Value.SourceVersion, result.Value.Body)
+	}
+}
+
+func TestFetcherDeriveVersionedFailureReturnsPriorVersionAsStale(t *testing.T) {
+	fetcher := NewFetcher(http.DefaultClient, cache.New(8, 1<<20), "radar-test", 1<<20, time.Minute)
+	checkedAt := time.Unix(100, 0).UTC()
+	_, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", time.Minute, "application/json", func(context.Context) (Result, error) {
+		return Result{Value: cache.Value{Body: []byte("last good"), FetchedAt: checkedAt, CheckedAt: checkedAt}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fallback, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v2", time.Minute, "application/json", func(context.Context) (Result, error) {
+		return Result{}, errors.New("invalid source")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback.State != cache.Stale || fallback.Value.SourceVersion != "v1" || string(fallback.Value.Body) != "last good" {
+		t.Fatalf("fallback = %#v", fallback)
+	}
+	if !fallback.Value.CheckedAt.Equal(checkedAt) || !fallback.Value.FetchedAt.Equal(checkedAt) {
+		t.Fatalf("fallback provenance changed: %#v", fallback.Value)
+	}
+}
+
+func TestFetcherDeriveVersionedRejectsOlderOverwrite(t *testing.T) {
+	fetcher := NewFetcher(http.DefaultClient, cache.New(8, 1<<20), "radar-test", 1<<20, time.Minute)
+	newer := time.Unix(200, 0).UTC()
+	if _, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v2", time.Minute, "application/json", func(context.Context) (Result, error) {
+		return Result{Value: cache.Value{Body: []byte("new"), FetchedAt: newer, CheckedAt: newer}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", time.Minute, "application/json", func(context.Context) (Result, error) {
+		older := newer.Add(-time.Minute)
+		return Result{Value: cache.Value{Body: []byte("old"), FetchedAt: older, CheckedAt: older}}, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "superseded") {
+		t.Fatalf("older overwrite error = %v", err)
+	}
+	cached, ok := fetcher.Cached("alerts")
+	if !ok || cached.Value.SourceVersion != "v2" || string(cached.Value.Body) != "new" {
+		t.Fatalf("newer cached result was replaced: %#v, ok=%v", cached, ok)
+	}
+}
+
+func TestFetcherDeriveVersionedSameRevisionFailureReturnsStale(t *testing.T) {
+	fetcher := NewFetcher(http.DefaultClient, cache.New(8, 1<<20), "radar-test", 1<<20, time.Minute)
+	if _, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", 0, "application/json", func(context.Context) (Result, error) {
+		return Result{Value: cache.Value{Body: []byte("last good")}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", 0, "application/json", func(context.Context) (Result, error) {
+		return Result{}, errors.New("temporary build failure")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != cache.Stale || result.Value.SourceVersion != "v1" || string(result.Value.Body) != "last good" {
+		t.Fatalf("same-version stale fallback = %#v", result)
+	}
+}
+
+func TestFetcherDeriveVersionedRecoversBuildPanicAndUnblocksNextCall(t *testing.T) {
+	fetcher := NewFetcher(http.DefaultClient, cache.New(8, 1<<20), "radar-test", 1<<20, time.Minute)
+	_, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", time.Minute, "application/json", func(context.Context) (Result, error) {
+		panic("boom")
+	})
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("panic error = %v", err)
+	}
+
+	result, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", time.Minute, "application/json", func(context.Context) (Result, error) {
+		return Result{Value: cache.Value{Body: []byte("recovered")}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Value.Body) != "recovered" || result.Value.SourceVersion != "v1" {
+		t.Fatalf("result after panic = %#v", result)
+	}
+}
+
+func TestFetcherDeriveVersionedReturnsSuccessfulOversizedBuild(t *testing.T) {
+	fetcher := NewFetcher(http.DefaultClient, cache.New(1, 1), "radar-test", 1<<20, time.Minute)
+	result, err := fetcher.DeriveVersioned(context.Background(), "alerts", "v1", time.Minute, "application/json", func(context.Context) (Result, error) {
+		return Result{Value: cache.Value{Body: []byte("larger than cache")}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Value.Body) != "larger than cache" || result.Value.SourceVersion != "v1" {
+		t.Fatalf("oversized build result = %#v", result)
+	}
+	if _, ok := fetcher.Cached("alerts"); ok {
+		t.Fatal("oversized derived body unexpectedly entered the cache")
 	}
 }
 

@@ -51,16 +51,29 @@ final class RadarApi {
     if (previousEtag != null) headers['If-None-Match'] = previousEtag;
     final response = await _client
         .get(_uri(path), headers: headers)
-        .timeout(const Duration(seconds: 12));
+        .timeout(const Duration(seconds: 30));
     final cacheStatus = _headerValue(response.headers, 'x-radar-cache') ?? '';
     final stale = cacheStatus.toUpperCase().contains('STALE');
+    final checkedAt =
+        _headerDate(response.headers, 'x-data-checked-at') ??
+        _headerDate(response.headers, 'x-data-fetched-at');
     if (response.statusCode == 304) {
-      return AlertsResult(alerts: _cachedAlerts, stale: stale, changed: false);
+      return AlertsResult(
+        alerts: _cachedAlerts,
+        stale: stale,
+        changed: false,
+        checkedAt: checkedAt,
+      );
     }
     _checkResponse(response);
     final responseEtag = _headerValue(response.headers, 'etag');
     if (previousEtag != null && responseEtag == previousEtag) {
-      return AlertsResult(alerts: _cachedAlerts, stale: stale, changed: false);
+      return AlertsResult(
+        alerts: _cachedAlerts,
+        stale: stale,
+        changed: false,
+        checkedAt: checkedAt,
+      );
     }
 
     // National alert collections can contain hundreds of detailed polygons.
@@ -68,7 +81,12 @@ final class RadarApi {
     final alerts = await Isolate.run(() => _parseAlerts(response.body));
     _cachedAlerts = alerts;
     _alertsEtag = responseEtag;
-    return AlertsResult(alerts: alerts, stale: stale, changed: true);
+    return AlertsResult(
+      alerts: alerts,
+      stale: stale,
+      changed: true,
+      checkedAt: checkedAt,
+    );
   }
 
   Future<RadarSnapshot> fetchLatest({
@@ -245,11 +263,13 @@ final class AlertsResult {
     required this.alerts,
     required this.stale,
     this.changed = true,
+    this.checkedAt,
   });
 
   final List<WeatherAlert> alerts;
   final bool stale;
   final bool changed;
+  final DateTime? checkedAt;
 }
 
 List<WeatherAlert> _parseAlerts(String body) {
@@ -295,4 +315,10 @@ String? _headerValue(Map<String, String> headers, String name) {
     if (entry.key.toLowerCase() == normalizedName) return entry.value;
   }
   return null;
+}
+
+DateTime? _headerDate(Map<String, String> headers, String name) {
+  final value = _headerValue(headers, name);
+  if (value == null) return null;
+  return DateTime.tryParse(value)?.toUtc();
 }

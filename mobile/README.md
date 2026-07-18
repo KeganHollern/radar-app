@@ -70,6 +70,10 @@ App Transport Security exception. Production should remain HTTPS.
 - Radar metadata uses server-sent events for prompt updates, with 15-second
   metadata polling as a fallback. Only the newest scan is addressable; the app
   contains no timeline or forecast UI.
+- Alert refreshes are single-flight: automatic signals join existing work, and
+  a manual retry that arrives during a request queues one follow-up instead of
+  disappearing. The stale-data banner shows progress while retrying, retains
+  the last valid polygons on failure, and reports the API's latest check time.
 
 ## Checks
 

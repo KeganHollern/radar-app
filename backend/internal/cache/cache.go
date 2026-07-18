@@ -7,14 +7,15 @@ import (
 )
 
 type Value struct {
-	Body         []byte
-	ContentType  string
-	ETag         string
-	LastModified string
-	FetchedAt    time.Time
-	CheckedAt    time.Time
-	ExpiresAt    time.Time
-	StaleUntil   time.Time
+	Body          []byte
+	ContentType   string
+	ETag          string
+	LastModified  string
+	SourceVersion string
+	FetchedAt     time.Time
+	CheckedAt     time.Time
+	ExpiresAt     time.Time
+	StaleUntil    time.Time
 }
 
 type State string
@@ -74,7 +75,7 @@ func (c *Cache) Put(key string, value Value) {
 	if existing, ok := c.items[key]; ok {
 		c.remove(existing)
 	}
-	size := int64(len(key) + len(value.Body) + len(value.ContentType) + len(value.ETag) + len(value.LastModified))
+	size := int64(len(key) + len(value.Body) + len(value.ContentType) + len(value.ETag) + len(value.LastModified) + len(value.SourceVersion))
 	if size > c.maxBytes {
 		return
 	}

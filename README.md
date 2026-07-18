@@ -30,7 +30,8 @@ There are deliberately no forecasts, animation loops, or historical timeline.
 - tap-to-select WSR-88D stations with current reflectivity and radial velocity
 - active NWS alert polygons, persisted per-type visibility settings, overlap
   selection, event colors, and tap-through alert details
-- foreground radar and alert refresh, plus immediate manual refresh
+- foreground radar and alert refresh, plus coalesced manual retry with visible
+  progress and last-check freshness feedback
 - foreground wake lock so the screen remains on while Anvil is open
 - bounded/coalesced upstream caching, stale-on-error behavior, and SSE refresh
 - non-root container, health probes, GHCR publishing, and Kubernetes manifests

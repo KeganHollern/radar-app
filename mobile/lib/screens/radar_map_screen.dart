@@ -20,6 +20,7 @@ import '../theme/flexoki_theme.dart';
 import '../widgets/map_attribution.dart';
 import '../widgets/radar_legend.dart';
 import '../widgets/settings_panel.dart';
+import '../widgets/status_banner.dart';
 
 class RadarMapScreen extends StatefulWidget {
   const RadarMapScreen({
@@ -726,13 +727,13 @@ class _RadarMapScreenState extends State<RadarMapScreen>
               children: [
                 _LiveStatusCard(
                   radar: _radar,
-                  onRefresh: _radar.refreshAll,
+                  onRefresh: () => _radar.refreshAll(userInitiated: true),
                   onOpenAlerts: _showAlerts,
                   onOpenSettings: _showSettings,
                 ),
                 if (_radar.radarError != null) ...[
                   const SizedBox(height: 8),
-                  _StatusBanner(
+                  StatusBanner(
                     icon: Icons.cloud_off_rounded,
                     message: _radar.radarError!,
                     onTap: _radar.refreshRadar,
@@ -740,17 +741,18 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                 ],
                 if (_radar.alertsStale || _radar.alertsError != null) ...[
                   const SizedBox(height: 8),
-                  _StatusBanner(
+                  StatusBanner(
                     icon: Icons.warning_amber_rounded,
-                    message:
-                        'Weather alerts may be out of date — tap to refresh',
-                    onTap: _radar.refreshAlerts,
+                    message: _alertStatusMessage(_radar),
+                    loading: _radar.isLoadingAlerts,
+                    loadingSemanticLabel: 'Refreshing weather alerts',
+                    onTap: () => _radar.refreshAlerts(userInitiated: true),
                   ),
                 ],
                 if (_locationAccess != LocationAccess.granted &&
                     _locationAccess != LocationAccess.checking) ...[
                   const SizedBox(height: 8),
-                  _StatusBanner(
+                  StatusBanner(
                     icon: Icons.location_off_rounded,
                     message: _locationMessage,
                     onTap: () async {
@@ -974,6 +976,10 @@ class _LiveStatusCard extends StatelessWidget {
         : stale
         ? 'Stale scan · ${_relativeAge(observedAt)}'
         : 'Latest scan · ${_relativeAge(observedAt)}';
+    final refreshing =
+        radar.isLoadingRadar ||
+        radar.isLoadingAlerts ||
+        radar.isLoadingStations;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -1073,9 +1079,9 @@ class _LiveStatusCard extends StatelessWidget {
               icon: const Icon(Icons.settings_outlined),
             ),
             IconButton(
-              tooltip: 'Refresh now',
-              onPressed: radar.isLoadingRadar ? null : onRefresh,
-              icon: radar.isLoadingRadar
+              tooltip: refreshing ? 'Refreshing live data' : 'Refresh now',
+              onPressed: refreshing ? null : onRefresh,
+              icon: refreshing
                   ? const SizedBox.square(
                       dimension: 20,
                       child: CircularProgressIndicator(strokeWidth: 2),
@@ -1179,51 +1185,6 @@ class _PinButton extends StatelessWidget {
               size: 30,
               color: pinned ? Flexoki.black : Flexoki.paper,
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusBanner extends StatelessWidget {
-  const _StatusBanner({
-    required this.icon,
-    required this.message,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String message;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Flexoki.base100.withValues(alpha: 0.96),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: Flexoki.base300),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          child: Row(
-            children: [
-              Icon(icon, size: 19, color: Flexoki.yellow),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(
-                  message,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12),
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded, color: Flexoki.base500),
-            ],
           ),
         ),
       ),
@@ -1725,6 +1686,18 @@ String _relativeAge(DateTime time) {
   if (age.inMinutes < 1) return '${age.inSeconds}s ago';
   if (age.inHours < 1) return '${age.inMinutes}m ago';
   return '${age.inHours}h ago';
+}
+
+String _alertStatusMessage(RadarController radar) {
+  if (radar.isLoadingAlerts) return 'Refreshing weather alerts…';
+  if (radar.alertsError != null) {
+    return radar.alerts.isEmpty
+        ? 'Weather alerts unavailable — tap to retry'
+        : 'Couldn’t update weather alerts — tap to retry';
+  }
+  final updatedAt = radar.alertsUpdatedAt;
+  if (updatedAt == null) return 'Cached weather alerts — tap to retry';
+  return 'Cached weather alerts · ${_relativeAge(updatedAt.toLocal())} — tap to retry';
 }
 
 String _formatDate(DateTime time) {

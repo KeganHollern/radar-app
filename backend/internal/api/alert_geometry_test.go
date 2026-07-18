@@ -182,9 +182,181 @@ func TestEnrichAlertsRejectsUntrustedZoneURLs(t *testing.T) {
 	}
 }
 
+func TestEnrichedAlertsCachesBodyWithoutHidingSourceFreshness(t *testing.T) {
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/geo+json")
+		_, _ = fmt.Fprint(w, geoJSONPolygon)
+	}))
+	defer provider.Close()
+
+	server := zoneTestAPI(provider, 8, 4)
+	fetchedAt := time.Unix(100, 0).UTC()
+	checkedAt := time.Unix(120, 0).UTC()
+	raw := upstream.Result{
+		Value: cache.Value{
+			Body:      alertCollection(provider.URL + "/zones/forecast/TXZ001"),
+			FetchedAt: fetchedAt,
+			CheckedAt: checkedAt,
+		},
+		State: cache.Stale,
+	}
+
+	first, err := server.enrichedAlerts(context.Background(), provider.URL, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshedCheckedAt := checkedAt.Add(30 * time.Second)
+	raw.State = cache.Hit
+	raw.Value.CheckedAt = refreshedCheckedAt
+	second, err := server.enrichedAlerts(context.Background(), provider.URL, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("zone enrichment calls = %d, want 1", calls.Load())
+	}
+	if string(first.Value.Body) != string(second.Value.Body) {
+		t.Fatal("cached enriched alert body changed")
+	}
+	if first.State != cache.Stale || second.State != cache.Hit {
+		t.Fatalf("source stale state was hidden: first=%q second=%q", first.State, second.State)
+	}
+	if !second.Value.FetchedAt.Equal(fetchedAt) || !second.Value.CheckedAt.Equal(refreshedCheckedAt) {
+		t.Fatalf("source timestamps were not preserved: %#v", second.Value)
+	}
+}
+
+func TestEnrichedAlertsRebuildsAfterTTLToResolveNextZoneBatch(t *testing.T) {
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/geo+json")
+		_, _ = fmt.Fprint(w, geoJSONPolygon)
+	}))
+	defer provider.Close()
+
+	server := zoneTestAPI(provider, 1, 1)
+	server.config.AlertTTL = 0
+	raw := upstream.Result{
+		Value: cache.Value{Body: alertCollection(
+			provider.URL+"/zones/forecast/TXZ001",
+			provider.URL+"/zones/forecast/TXZ002",
+		)},
+		State: cache.Hit,
+	}
+
+	first, err := server.enrichedAlerts(context.Background(), provider.URL, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, firstProperties, _ := decodeSingleAlert(t, first.Value.Body)
+	if firstProperties["radarGeometryZonesResolved"] != float64(1) {
+		t.Fatalf("first resolved zones = %#v", firstProperties["radarGeometryZonesResolved"])
+	}
+
+	second, err := server.enrichedAlerts(context.Background(), provider.URL, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondProperties, _ := decodeSingleAlert(t, second.Value.Body)
+	if secondProperties["radarGeometryZonesResolved"] != float64(2) {
+		t.Fatalf("second resolved zones = %#v", secondProperties["radarGeometryZonesResolved"])
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("zone fetches = %d, want one new zone per enrichment generation", calls.Load())
+	}
+}
+
+func TestEnrichedAlertsChangedSourceRevisionRebuildsImmediately(t *testing.T) {
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/geo+json")
+		_, _ = fmt.Fprint(w, geoJSONPolygon)
+	}))
+	defer provider.Close()
+
+	server := zoneTestAPI(provider, 8, 2)
+	target := provider.URL + "/alerts/active"
+	firstRaw := upstream.Result{Value: cache.Value{
+		Body:      alertCollection(provider.URL + "/zones/forecast/TXZ001"),
+		FetchedAt: time.Unix(100, 0).UTC(),
+		CheckedAt: time.Unix(100, 0).UTC(),
+	}, State: cache.Hit}
+	first, err := server.enrichedAlerts(context.Background(), target, firstRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondRaw := firstRaw
+	secondRaw.Value.Body = alertCollection(
+		provider.URL+"/zones/forecast/TXZ001",
+		provider.URL+"/zones/forecast/TXZ002",
+	)
+	secondRaw.Value.FetchedAt = time.Unix(200, 0).UTC()
+	secondRaw.Value.CheckedAt = time.Unix(200, 0).UTC()
+	second, err := server.enrichedAlerts(context.Background(), target, secondRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, properties, _ := decodeSingleAlert(t, second.Value.Body)
+	if properties["radarGeometryZonesResolved"] != float64(2) {
+		t.Fatalf("changed revision resolved zones = %#v", properties["radarGeometryZonesResolved"])
+	}
+	if first.Value.SourceVersion == second.Value.SourceVersion {
+		t.Fatal("changed upstream body reused the old derived source revision")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("zone fetches = %d, want only the newly referenced zone after revision change", calls.Load())
+	}
+}
+
+func TestEnrichedAlertsInvalidNewRevisionFallsBackStaleWithPriorProvenance(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/geo+json")
+		_, _ = fmt.Fprint(w, geoJSONPolygon)
+	}))
+	defer provider.Close()
+
+	server := zoneTestAPI(provider, 8, 2)
+	target := provider.URL + "/alerts/active"
+	priorTime := time.Unix(100, 0).UTC()
+	priorRaw := upstream.Result{Value: cache.Value{
+		Body:      alertCollection(provider.URL + "/zones/forecast/TXZ001"),
+		FetchedAt: priorTime,
+		CheckedAt: priorTime,
+	}, State: cache.Hit}
+	prior, err := server.enrichedAlerts(context.Background(), target, priorRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalidRaw := upstream.Result{Value: cache.Value{
+		Body:      []byte(`{"type":"FeatureCollection","features":`),
+		FetchedAt: priorTime.Add(time.Minute),
+		CheckedAt: priorTime.Add(time.Minute),
+	}, State: cache.Hit}
+	fallback, err := server.enrichedAlerts(context.Background(), target, invalidRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback.State != cache.Stale {
+		t.Fatalf("fallback state = %q, want STALE", fallback.State)
+	}
+	if fallback.Value.SourceVersion != prior.Value.SourceVersion || string(fallback.Value.Body) != string(prior.Value.Body) {
+		t.Fatal("invalid revision did not retain the prior normalized collection")
+	}
+	if !fallback.Value.FetchedAt.Equal(priorTime) || !fallback.Value.CheckedAt.Equal(priorTime) {
+		t.Fatalf("fallback provenance changed: %#v", fallback.Value)
+	}
+}
+
 func zoneTestAPI(provider *httptest.Server, maxFetches, workers int) *Server {
 	c := config.Config{
 		NWSBaseURL:       provider.URL,
+		AlertTTL:         time.Minute,
 		AlertZoneTTL:     time.Hour,
 		AlertZoneTimeout: 2 * time.Second,
 		AlertZoneFailTTL: time.Minute,

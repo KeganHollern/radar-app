@@ -30,9 +30,10 @@ type Fetcher struct {
 }
 
 type call struct {
-	done   chan struct{}
-	result Result
-	err    error
+	done          chan struct{}
+	result        Result
+	err           error
+	sourceVersion string
 }
 
 func NewFetcher(client *http.Client, responseCache *cache.Cache, userAgent string, maxBytes int64, staleTTL time.Duration) *Fetcher {
@@ -98,6 +99,153 @@ func (f *Fetcher) Derive(ctx context.Context, key string, ttl time.Duration, con
 	delete(f.inflight, inflightKey)
 	f.mu.Unlock()
 	return current.result, current.err
+}
+
+// DeriveVersioned keeps one derived cache slot for a logical key while making
+// the source revision part of its freshness check. Builds for different source
+// revisions serialize on the stable key, and waiters always re-check their own
+// requested revision after the shared build completes.
+//
+// The shared build is detached from the first waiter's cancellation. Callers
+// can stop waiting independently, while build must apply its own bounded
+// timeout for any external work.
+func (f *Fetcher) DeriveVersioned(
+	ctx context.Context,
+	key string,
+	sourceVersion string,
+	ttl time.Duration,
+	contentType string,
+	build func(context.Context) (Result, error),
+) (Result, error) {
+	if sourceVersion == "" {
+		return Result{}, errors.New("derived source version must not be empty")
+	}
+	inflightKey := "derive-versioned:" + key
+	for {
+		now := time.Now().UTC()
+		if value, state, ok := f.cache.Get(key, now); ok && state == cache.Hit && value.SourceVersion == sourceVersion {
+			return Result{Value: value, State: cache.Hit}, nil
+		}
+
+		f.mu.Lock()
+		current, exists := f.inflight[inflightKey]
+		if !exists {
+			current = &call{done: make(chan struct{}), sourceVersion: sourceVersion}
+			f.inflight[inflightKey] = current
+			buildCtx := context.WithoutCancel(ctx)
+			go f.finishVersionedDerive(current, inflightKey, buildCtx, key, sourceVersion, ttl, contentType, build)
+		}
+		f.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		case <-current.done:
+			// A different source revision may have owned the shared build. Loop
+			// through the cache check rather than accepting that result.
+			if current.sourceVersion != sourceVersion {
+				continue
+			}
+			if current.err != nil {
+				return Result{}, current.err
+			}
+			if current.result.State == cache.Stale {
+				return current.result, nil
+			}
+			if current.result.Value.SourceVersion != sourceVersion {
+				// Cross-version fallback is intentionally usable only when it is
+				// explicitly marked stale and retains the prior value's provenance.
+				return Result{}, errors.New("derived result has an unexpected source version")
+			}
+			// Return the matching shared result directly. Cache admission is
+			// deliberately best-effort, so an oversized value must not make a
+			// successful caller rebuild forever.
+			return current.result, nil
+		}
+	}
+}
+
+func (f *Fetcher) finishVersionedDerive(
+	current *call,
+	inflightKey string,
+	ctx context.Context,
+	key string,
+	sourceVersion string,
+	ttl time.Duration,
+	contentType string,
+	build func(context.Context) (Result, error),
+) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			current.result = Result{}
+			current.err = fmt.Errorf("versioned derived build panicked: %v", recovered)
+		}
+		f.mu.Lock()
+		if f.inflight[inflightKey] == current {
+			delete(f.inflight, inflightKey)
+		}
+		f.mu.Unlock()
+		close(current.done)
+	}()
+	current.result, current.err = f.deriveVersioned(ctx, key, sourceVersion, ttl, contentType, build)
+}
+
+func (f *Fetcher) deriveVersioned(
+	ctx context.Context,
+	key string,
+	sourceVersion string,
+	ttl time.Duration,
+	contentType string,
+	build func(context.Context) (Result, error),
+) (Result, error) {
+	now := time.Now().UTC()
+	previous, previousState, hasPrevious := f.cache.Get(key, now)
+	if hasPrevious && previousState == cache.Hit && previous.SourceVersion == sourceVersion {
+		return Result{Value: previous, State: cache.Hit}, nil
+	}
+
+	result, err := build(ctx)
+	if err != nil {
+		if hasPrevious && previous.SourceVersion != "" {
+			return Result{Value: previous, State: cache.Stale}, nil
+		}
+		return Result{}, err
+	}
+
+	now = time.Now().UTC()
+	result.Value.ContentType = contentType
+	result.Value.ETag = ""
+	result.Value.SourceVersion = sourceVersion
+	if result.Value.FetchedAt.IsZero() {
+		result.Value.FetchedAt = now
+	}
+	if result.Value.CheckedAt.IsZero() {
+		result.Value.CheckedAt = now
+	}
+	result.Value.ExpiresAt = now.Add(ttl)
+	result.Value.StaleUntil = now.Add(ttl + f.staleTTL)
+
+	// A delayed request for an older source must not replace a newer revision
+	// that reached the stable slot while this caller was waiting elsewhere.
+	if existing, _, ok := f.cache.Get(key, now); ok &&
+		existing.SourceVersion != "" &&
+		existing.SourceVersion != sourceVersion &&
+		newerProvenance(existing, result.Value) {
+		return Result{}, errors.New("derived source version was superseded")
+	}
+
+	f.cache.Put(key, result.Value)
+	if result.State == "" {
+		result.State = cache.Miss
+	}
+	return result, nil
+}
+
+func newerProvenance(existing, candidate cache.Value) bool {
+	if existing.CheckedAt.After(candidate.CheckedAt) {
+		return true
+	}
+	return existing.CheckedAt.Equal(candidate.CheckedAt) && existing.FetchedAt.After(candidate.FetchedAt)
 }
 
 func (f *Fetcher) derive(ctx context.Context, key string, ttl time.Duration, contentType string, build func(context.Context) (Result, error)) (Result, error) {

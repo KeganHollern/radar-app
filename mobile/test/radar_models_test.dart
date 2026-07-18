@@ -214,7 +214,10 @@ void main() {
           (_) async => http.Response(
             _alertCollection,
             200,
-            headers: {'X-Radar-Cache': 'STALE'},
+            headers: {
+              'X-Radar-Cache': 'STALE',
+              'X-Data-Fetched-At': '2026-07-17T23:42:10-05:00',
+            },
           ),
         ),
       );
@@ -223,9 +226,71 @@ void main() {
 
       expect(result.stale, isTrue);
       expect(result.alerts, hasLength(1));
+      expect(result.checkedAt, DateTime.utc(2026, 7, 18, 4, 42, 10));
       api.close();
     },
   );
+
+  test('alert checked-at header takes precedence over fetched-at', () async {
+    final api = RadarApi(
+      baseUrl: 'https://radar.lystic.dev',
+      client: MockClient(
+        (_) async => http.Response(
+          _alertCollection,
+          200,
+          headers: {
+            'X-Data-Checked-At': '2026-07-18T05:12:34.567Z',
+            'X-Data-Fetched-At': '2026-07-18T05:00:00Z',
+          },
+        ),
+      ),
+    );
+
+    final result = await api.fetchAlerts();
+
+    expect(result.checkedAt, DateTime.utc(2026, 7, 18, 5, 12, 34, 567));
+    api.close();
+  });
+
+  test('conditional alert 304 retains data and reports check time', () async {
+    var request = 0;
+    final api = RadarApi(
+      baseUrl: 'https://radar.lystic.dev',
+      client: MockClient((requestData) async {
+        request++;
+        if (request == 2) {
+          expect(requestData.headers['If-None-Match'], 'W/"alerts-1"');
+          return http.Response(
+            '',
+            304,
+            headers: {
+              'ETag': 'W/"alerts-1"',
+              'X-Data-Checked-At': '2026-07-18T05:30:00Z',
+              'X-Data-Fetched-At': '2026-07-18T05:00:00Z',
+            },
+          );
+        }
+        return http.Response(
+          _alertCollection,
+          200,
+          headers: {
+            'ETag': 'W/"alerts-1"',
+            'X-Data-Checked-At': '2026-07-18T05:00:00Z',
+          },
+        );
+      }),
+    );
+
+    final initial = await api.fetchAlerts();
+    final unchanged = await api.fetchAlerts();
+
+    expect(request, 2);
+    expect(initial.changed, isTrue);
+    expect(unchanged.changed, isFalse);
+    expect(unchanged.alerts, same(initial.alerts));
+    expect(unchanged.checkedAt, DateTime.utc(2026, 7, 18, 5, 30));
+    api.close();
+  });
 
   test('failed alert refresh retains polygons until a fresh success', () async {
     var request = 0;

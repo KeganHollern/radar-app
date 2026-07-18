@@ -9,10 +9,14 @@ import 'nearby_station_selection.dart';
 typedef VoidCallback = void Function();
 
 final class RadarController {
-  RadarController({RadarApi? api, AlertVisibilityStore? alertVisibilityStore})
-    : _api = api ?? RadarApi(baseUrl: AppConfig.apiBaseUrl),
-      _alertVisibilityStore =
-          alertVisibilityStore ?? SharedPreferencesAlertVisibilityStore() {
+  RadarController({
+    RadarApi? api,
+    AlertVisibilityStore? alertVisibilityStore,
+    Duration alertsRefreshInterval = AppConfig.alertsRefreshInterval,
+  }) : _api = api ?? RadarApi(baseUrl: AppConfig.apiBaseUrl),
+       _alertVisibilityStore =
+           alertVisibilityStore ?? SharedPreferencesAlertVisibilityStore(),
+       _alertsRefreshInterval = alertsRefreshInterval {
     for (final type in _defaultKnownAlertTypes) {
       _knownAlertTypeLabels[_normalizeAlertType(type)] = type;
     }
@@ -20,16 +24,19 @@ final class RadarController {
 
   final RadarApi _api;
   final AlertVisibilityStore _alertVisibilityStore;
+  final Duration _alertsRefreshInterval;
   final List<VoidCallback> _listeners = [];
   Timer? _radarTimer;
   Timer? _alertsTimer;
   Timer? _stationsTimer;
   Timer? _updatesReconnectTimer;
   StreamSubscription<RadarUpdate>? _updatesSubscription;
+  Future<void>? _alertsRefreshFuture;
   bool _disposed = false;
   bool _loadingRadar = false;
   bool _loadingAlerts = false;
   bool _loadingStations = false;
+  bool _alertsRefreshQueued = false;
   int _radarRequest = 0;
   int _updatesGeneration = 0;
   Map<String, dynamic> _stationGeoJson = _emptyFeatureCollection();
@@ -42,6 +49,7 @@ final class RadarController {
   double? _nearbyCenterLatitude;
   double? _nearbyCenterLongitude;
   RadarStation? _snapshotStation;
+  DateTime? _alertsLastStartedAt;
 
   RadarMode mode = RadarMode.aggregate;
   RadarStation? selectedStation;
@@ -121,8 +129,8 @@ final class RadarController {
       (_) => refreshRadar(),
     );
     _alertsTimer = Timer.periodic(
-      AppConfig.alertsRefreshInterval,
-      (_) => refreshAlerts(),
+      _alertsRefreshInterval,
+      (_) => refreshAlertsIfDue(),
     );
     _stationsTimer = Timer.periodic(
       AppConfig.stationsRefreshInterval,
@@ -132,8 +140,12 @@ final class RadarController {
     await Future.wait([refreshStations(), refreshAlerts(), refreshRadar()]);
   }
 
-  Future<void> refreshAll() async {
-    await Future.wait([refreshStations(), refreshAlerts(), refreshRadar()]);
+  Future<void> refreshAll({bool userInitiated = false}) async {
+    await Future.wait([
+      refreshStations(),
+      refreshAlerts(userInitiated: userInitiated),
+      refreshRadar(),
+    ]);
   }
 
   Future<void> resume() async {
@@ -171,34 +183,77 @@ final class RadarController {
     }
   }
 
-  Future<void> refreshAlerts() async {
-    if (_loadingAlerts || _disposed) return;
+  Future<void> refreshAlerts({bool userInitiated = false}) {
+    if (_disposed) return Future.value();
+    final current = _alertsRefreshFuture;
+    if (current != null) {
+      // A user tap that lands during an automatic request is never discarded.
+      // Queue at most one immediate follow-up and let every caller await the
+      // same single-flight Future through that follow-up.
+      if (userInitiated) _alertsRefreshQueued = true;
+      return current;
+    }
+
+    final completer = Completer<void>();
+    _alertsRefreshFuture = completer.future;
+    _alertsRefreshQueued = false;
+    unawaited(_runAlertsRefreshLoop(completer));
+    return completer.future;
+  }
+
+  Future<void> refreshAlertsIfDue() {
+    final current = _alertsRefreshFuture;
+    if (current != null) return current;
+    if (_disposed) return Future.value();
+    if (alertsStale || alertsError != null || alertsUpdatedAt == null) {
+      return refreshAlerts();
+    }
+    final startedAt = _alertsLastStartedAt;
+    if (startedAt != null) {
+      final age = DateTime.now().difference(startedAt);
+      if (age.isNegative || age < _alertsRefreshInterval) {
+        return Future.value();
+      }
+    }
+    return refreshAlerts();
+  }
+
+  Future<void> _runAlertsRefreshLoop(Completer<void> completer) async {
     _loadingAlerts = true;
     _notify();
     try {
-      final fresh = await _api.fetchAlerts();
-      if (_disposed) return;
-      _allAlerts = List.unmodifiable(fresh.alerts);
-      if (fresh.changed) {
-        final learnedTypes = _rememberAlertTypes(fresh.alerts);
-        _rebuildVisibleAlerts();
-        if (learnedTypes && _alertVisibilityLoaded) {
-          unawaited(_saveAlertVisibility());
+      do {
+        _alertsRefreshQueued = false;
+        _alertsLastStartedAt = DateTime.now();
+        try {
+          final fresh = await _api.fetchAlerts();
+          if (_disposed) return;
+          _allAlerts = List.unmodifiable(fresh.alerts);
+          if (fresh.changed) {
+            final learnedTypes = _rememberAlertTypes(fresh.alerts);
+            _rebuildVisibleAlerts();
+            if (learnedTypes && _alertVisibilityLoaded) {
+              unawaited(_saveAlertVisibility());
+            }
+          }
+          alertsStale = fresh.stale;
+          alertsUpdatedAt = fresh.checkedAt ?? DateTime.now().toUtc();
+          alertsError = null;
+        } catch (error) {
+          if (!_disposed) {
+            // Keep the last successfully received polygons visible, but never
+            // present them as current when their refresh failed.
+            alertsStale = true;
+            alertsError = error.toString();
+          }
         }
-      }
-      alertsStale = fresh.stale;
-      alertsUpdatedAt = DateTime.now();
-      alertsError = null;
-    } catch (error) {
-      if (!_disposed) {
-        // Keep the last successfully received polygons visible, but never
-        // present them as current when their refresh failed.
-        alertsStale = true;
-        alertsError = error.toString();
-      }
+        if (!_disposed) _notify();
+      } while (!_disposed && _alertsRefreshQueued);
     } finally {
       _loadingAlerts = false;
-      _notify();
+      _alertsRefreshFuture = null;
+      if (!_disposed) _notify();
+      if (!completer.isCompleted) completer.complete();
     }
   }
 
@@ -516,7 +571,7 @@ final class RadarController {
           radarError = null;
           _notify();
         }
-        if (update.refreshAlerts) unawaited(refreshAlerts());
+        if (update.refreshAlerts) unawaited(refreshAlertsIfDue());
       },
       onError: (Object error, StackTrace stackTrace) {
         _scheduleUpdatesReconnect(generation);
