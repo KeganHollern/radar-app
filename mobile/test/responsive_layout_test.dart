@@ -141,6 +141,78 @@ void main() {
     expect(radar.mode, RadarMode.stationReflectivity);
     expect(find.byKey(const ValueKey('landscape-side-panel')), findsNothing);
   });
+
+  testWidgets('landscape panel stays fixed until a large right swipe', (
+    tester,
+  ) async {
+    await _setSurfaceSize(tester, const Size(640, 320));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: Flexoki.darkTheme,
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: FilledButton(
+                onPressed: () => showLandscapeSidePanel<void>(
+                  context: context,
+                  barrierLabel: 'Close test panel',
+                  builder: (context, scrollController) => ListView(
+                    controller: scrollController,
+                    children: const [SizedBox(height: 600)],
+                  ),
+                ),
+                child: const Text('Open test panel'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open test panel'));
+    await tester.pumpAndSettle();
+
+    final panel = find.byKey(const ValueKey('landscape-side-panel'));
+    final restingRect = tester.getRect(panel);
+    final scrollable = find.descendant(
+      of: panel,
+      matching: find.byType(Scrollable),
+    );
+    final scrollPosition = tester.state<ScrollableState>(scrollable).position;
+
+    await tester.drag(panel, const Offset(-210, 0));
+    await tester.pumpAndSettle();
+    expect(panel, findsOneWidget);
+    expect(tester.getRect(panel), restingRect);
+
+    final smallSwipe = await tester.startGesture(tester.getCenter(panel));
+    await smallSwipe.moveBy(const Offset(60, 0));
+    await tester.pump();
+    expect(tester.getRect(panel), restingRect);
+    await smallSwipe.up();
+    await tester.pumpAndSettle();
+    expect(panel, findsOneWidget);
+    expect(tester.getRect(panel), restingRect);
+
+    await tester.drag(panel, const Offset(12, -100));
+    await tester.pumpAndSettle();
+    expect(panel, findsOneWidget);
+    expect(tester.getRect(panel), restingRect);
+    expect(scrollPosition.pixels, greaterThan(0));
+
+    final intentionalSwipe = await tester.startGesture(tester.getCenter(panel));
+    await intentionalSwipe.moveBy(const Offset(100, 0));
+    await tester.pump();
+    expect(tester.getRect(panel), restingRect);
+    await intentionalSwipe.moveBy(const Offset(40, 0));
+    await tester.pump();
+    expect(tester.getRect(panel).left, greaterThan(restingRect.left));
+    await intentionalSwipe.up();
+    await tester.pumpAndSettle();
+    expect(panel, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Future<void> _pumpChrome(

@@ -1163,30 +1163,22 @@ class _LiveStatusCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Material(
-                color: Flexoki.base100,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  side: const BorderSide(color: Flexoki.base300),
+              const SizedBox(width: 4),
+              IconButton(
+                key: const ValueKey('landscape-refresh-button'),
+                tooltip: refreshing ? 'Refreshing live data' : 'Refresh now',
+                constraints: const BoxConstraints.tightFor(
+                  width: 48,
+                  height: 48,
                 ),
-                clipBehavior: Clip.antiAlias,
-                child: IconButton(
-                  key: const ValueKey('landscape-refresh-button'),
-                  tooltip: refreshing ? 'Refreshing live data' : 'Refresh now',
-                  constraints: const BoxConstraints.tightFor(
-                    width: 48,
-                    height: 48,
-                  ),
-                  padding: EdgeInsets.zero,
-                  onPressed: refreshing ? null : onRefresh,
-                  icon: refreshing
-                      ? const SizedBox.square(
-                          dimension: 17,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.refresh_rounded, size: 21),
-                ),
+                padding: EdgeInsets.zero,
+                onPressed: refreshing ? null : onRefresh,
+                icon: refreshing
+                    ? const SizedBox.square(
+                        dimension: 17,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh_rounded, size: 21),
               ),
             ],
           ),
