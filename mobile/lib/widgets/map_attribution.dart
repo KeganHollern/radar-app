@@ -105,7 +105,7 @@ class MapAttributionPanel extends StatelessWidget {
             _SourceLinks(links: _weatherAttributions, onOpenLink: onOpenLink),
             const SizedBox(height: 18),
             const Text(
-              'Anvil is not affiliated with or endorsed by NOAA or the National Weather Service.',
+              'HyprRadar is not affiliated with or endorsed by NOAA or the National Weather Service.',
               style: TextStyle(color: Flexoki.base500, fontSize: 12),
             ),
           ],

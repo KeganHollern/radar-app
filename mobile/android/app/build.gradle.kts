@@ -13,9 +13,34 @@ if (keystorePropertiesFile.exists()) {
     keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 
-fun requiredKeystoreProperty(name: String): String =
-    keystoreProperties.getProperty(name)
+val releaseSigningEnvironment = mapOf(
+    "storeFile" to System.getenv("ANDROID_KEYSTORE_PATH"),
+    "storePassword" to System.getenv("ANDROID_KEYSTORE_PASSWORD"),
+    "keyAlias" to System.getenv("ANDROID_KEY_ALIAS"),
+    "keyPassword" to System.getenv("ANDROID_KEY_PASSWORD"),
+)
+val hasEnvironmentReleaseSigning =
+    releaseSigningEnvironment.values.any { !it.isNullOrBlank() }
+
+if (hasEnvironmentReleaseSigning) {
+    val missing = releaseSigningEnvironment
+        .filterValues { it.isNullOrBlank() }
+        .keys
+    check(missing.isEmpty()) {
+        "Incomplete environment-based Android release signing configuration: " +
+            "missing ${missing.joinToString()}"
+    }
+}
+
+val hasReleaseSigning = hasEnvironmentReleaseSigning || keystorePropertiesFile.exists()
+
+fun requiredReleaseSigningValue(name: String): String {
+    if (hasEnvironmentReleaseSigning) {
+        return releaseSigningEnvironment.getValue(name)!!
+    }
+    return keystoreProperties.getProperty(name)
         ?: error("Missing '$name' in ${keystorePropertiesFile.path}")
+}
 
 android {
     namespace = "dev.lystic.radar_mobile"
@@ -42,21 +67,21 @@ android {
     }
 
     signingConfigs {
-        if (keystorePropertiesFile.exists()) {
+        if (hasReleaseSigning) {
             create("release") {
-                storeFile = rootProject.file(requiredKeystoreProperty("storeFile"))
-                storePassword = requiredKeystoreProperty("storePassword")
-                keyAlias = requiredKeystoreProperty("keyAlias")
-                keyPassword = requiredKeystoreProperty("keyPassword")
+                storeFile = rootProject.file(requiredReleaseSigningValue("storeFile"))
+                storePassword = requiredReleaseSigningValue("storePassword")
+                keyAlias = requiredReleaseSigningValue("keyAlias")
+                keyPassword = requiredReleaseSigningValue("keyPassword")
             }
         }
     }
 
     buildTypes {
         release {
-            // A missing key.properties intentionally produces an unsigned
-            // release artifact; it must never fall back to the debug key.
-            if (keystorePropertiesFile.exists()) {
+            // A missing signing environment/key.properties intentionally
+            // produces an unsigned artifact; never fall back to the debug key.
+            if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
         }

@@ -1,12 +1,18 @@
-# Anvil
+# HyprRadar
 
-Anvil is a live-only U.S. weather radar app designed for a glanceable
+HyprRadar is a live-only U.S. weather radar app designed for a glanceable
 driving view. The Flutter client renders a dark MapLibre map, the device
 location, active weather alerts, and either a multi-radar mosaic or a selected
 WSR-88D station. The Go API owns NOAA/NWS access, validation, normalization, and
 caching.
 
 There are deliberately no forecasts, animation loops, or historical timeline.
+
+## Download for Android
+
+Each published [GitHub Release](https://github.com/KeganHollern/radar-app/releases)
+includes a signed universal HyprRadar APK and its SHA-256 checksum. Download the
+APK on an Android device and allow installation from that source when prompted.
 
 ## Repository layout
 
@@ -17,6 +23,7 @@ There are deliberately no forecasts, animation loops, or historical timeline.
   and the Level-II elevation roadmap
 - `.github/workflows/api-image.yml` — Go tests and GHCR image publishing
 - `.github/workflows/mobile.yml` — Flutter analysis and tests
+- `.github/workflows/android-release.yml` — signed APK release publishing
 
 ## What works
 
@@ -32,7 +39,7 @@ There are deliberately no forecasts, animation loops, or historical timeline.
   selection, event colors, and tap-through alert details
 - foreground radar and alert refresh, plus coalesced manual retry with visible
   progress and last-check freshness feedback
-- foreground wake lock so the screen remains on while Anvil is open
+- foreground wake lock so the screen remains on while HyprRadar is open
 - bounded/coalesced upstream caching, stale-on-error behavior, and SSE refresh
 - non-root container, health probes, GHCR publishing, and Kubernetes manifests
 - responsive Flexoki landing page at `radar.lystic.dev` with no external asset
@@ -61,7 +68,7 @@ same origin so generated tile templates remain reachable.
 
 Useful endpoints:
 
-- `GET /` — Anvil landing page
+- `GET /` — HyprRadar landing page
 - `GET /healthz` and `GET /readyz`
 - `GET /api/v1/config`
 - `GET /api/v1/stations`

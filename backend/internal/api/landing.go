@@ -39,9 +39,9 @@ const landingPage = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Anvil is a live-only weather radar built for a clear, glanceable view of the road ahead.">
+  <meta name="description" content="HyprRadar is a live-only weather radar built for a clear, glanceable view of the road ahead.">
   <meta name="theme-color" content="#100f0f">
-  <title>Anvil — Live weather radar</title>
+  <title>HyprRadar — Live weather radar</title>
   <style>
     :root {
       color-scheme: dark;
@@ -490,7 +490,7 @@ const landingPage = `<!doctype html>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="site-header shell">
-    <a class="brand" href="/" aria-label="Anvil home">
+    <a class="brand" href="/" aria-label="HyprRadar home">
       <span class="brand-mark" aria-hidden="true">
         <svg viewBox="0 0 40 40" role="presentation">
           <rect width="40" height="40" fill="#1c1b1a"/>
@@ -499,7 +499,7 @@ const landingPage = `<!doctype html>
           <path d="m29 24-5 11 5-3 5 3Z" fill="#fffcf0" stroke="#100f0f" stroke-width="1.4"/>
         </svg>
       </span>
-      <span>Anvil</span>
+      <span>HyprRadar</span>
     </a>
     <nav class="site-nav" aria-label="Primary navigation">
       <a href="#capabilities">What it does</a>
@@ -513,7 +513,7 @@ const landingPage = `<!doctype html>
       <div class="hero-copy">
         <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span>Live radar. No timeline.</p>
         <h1 id="hero-title">See what’s <span>ahead.</span></h1>
-        <p class="lede">Anvil keeps current radar, active weather alerts, and your position together in one calm, glanceable map—built for the road, not the forecast cycle.</p>
+        <p class="lede">HyprRadar keeps current radar, active weather alerts, and your position together in one calm, glanceable map—built for the road, not the forecast cycle.</p>
         <div class="actions">
           <a class="button primary" href="https://github.com/KeganHollern/radar-app">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 9 4 12l4 3M16 9l4 3-4 3M14 5l-4 14"/></svg>
@@ -532,7 +532,7 @@ const landingPage = `<!doctype html>
 
       <div class="phone-stage">
         <figure class="phone-figure">
-          <div class="phone" role="img" aria-label="Anvil app showing live radar, roads, the current location, and a tornado warning near Austin">
+          <div class="phone" role="img" aria-label="HyprRadar app showing live radar, roads, the current location, and a tornado warning near Austin">
             <div class="screen">
               <svg class="screen-map" viewBox="0 0 256 540" preserveAspectRatio="none" aria-hidden="true">
                 <defs>
@@ -553,7 +553,7 @@ const landingPage = `<!doctype html>
               </svg>
               <div class="island" aria-hidden="true"></div>
               <div class="status-bar" aria-hidden="true"><span>9:41</span><span class="status-icons">● ◒ <i></i></span></div>
-              <div class="top-pill" aria-hidden="true"><span>Anvil</span><b>LIVE</b></div>
+              <div class="top-pill" aria-hidden="true"><span>HyprRadar</span><b>LIVE</b></div>
               <div class="map-control one" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/></svg></div>
               <div class="map-control two" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 10 3.01V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 7l-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.96 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg></div>
               <div class="location" aria-hidden="true"></div>
@@ -567,14 +567,14 @@ const landingPage = `<!doctype html>
       </div>
     </section>
 
-    <section class="features shell" id="capabilities" aria-label="Anvil capabilities">
+    <section class="features shell" id="capabilities" aria-label="HyprRadar capabilities">
       <article class="feature"><span class="feature-number">01 / NOW</span><h2>Current radar only</h2><p>A live multi-radar view with station reflectivity and radial velocity when you need more detail.</p></article>
       <article class="feature"><span class="feature-number">02 / FOLLOW</span><h2>Built around your position</h2><p>Pin the map to keep yourself centered without losing the zoom level that matters on the road.</p></article>
       <article class="feature"><span class="feature-number">03 / ALERT</span><h2>Warnings on the map</h2><p>Active NWS alert areas appear in context, with clear details and controls for the alert types you want.</p></article>
     </section>
 
     <section class="open-source shell" aria-labelledby="open-title">
-      <div><h2 id="open-title">Weather software, built in the open.</h2><p>Anvil is a Flutter and Go project powered by current NOAA and National Weather Service data. Inspect the architecture, follow the work, or make it better.</p></div>
+      <div><h2 id="open-title">Weather software, built in the open.</h2><p>HyprRadar is a Flutter and Go project powered by current NOAA and National Weather Service data. Inspect the architecture, follow the work, or make it better.</p></div>
       <a class="button" href="https://github.com/KeganHollern/radar-app">Explore on GitHub <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
     </section>
   </main>

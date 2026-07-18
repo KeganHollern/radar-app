@@ -5,12 +5,14 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/mobile.yml"
+      - ".github/workflows/android-release.yml"
   push:
     branches:
       - main
     paths:
       - "mobile/**"
       - ".github/workflows/mobile.yml"
+      - ".github/workflows/android-release.yml"
   workflow_dispatch:
 
 permissions:

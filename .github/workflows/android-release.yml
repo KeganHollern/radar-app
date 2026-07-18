@@ -1,0 +1,186 @@
+name: Android release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Build signed APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.7"
+          channel: stable
+          cache: true
+
+      - name: Validate release metadata
+        id: metadata
+        working-directory: mobile
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version_line="$(sed -nE 's/^version:[[:space:]]+([^[:space:]]+)[[:space:]]*$/\1/p' pubspec.yaml)"
+          if [[ ! "$version_line" =~ ^([^+]+)\+([0-9]+)$ ]]; then
+            echo "mobile/pubspec.yaml must contain version: <version>+<integer build>" >&2
+            exit 1
+          fi
+
+          version_name="${BASH_REMATCH[1]}"
+          version_code="${BASH_REMATCH[2]}"
+          if [[ ! "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Unsupported Android version name: $version_name" >&2
+            exit 1
+          fi
+          if (( 10#$version_code <= 0 )); then
+            echo "Android version code must be greater than zero." >&2
+            exit 1
+          fi
+
+          expected_tag="v${version_name}"
+          tag="${RELEASE_TAG:-$expected_tag}"
+          if [[ "$tag" != "$expected_tag" ]]; then
+            echo "Release tag '$tag' must match pubspec version '$expected_tag'." >&2
+            exit 1
+          fi
+
+          asset="hyprradar-${tag}-android.apk"
+          {
+            echo "tag=$tag"
+            echo "version_name=$version_name"
+            echo "version_code=$version_code"
+            echo "asset=$asset"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: mobile
+        run: flutter analyze
+
+      - name: Test
+        working-directory: mobile
+        run: flutter test
+
+      - name: Prepare release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" ]]; then
+            echo "ANDROID_KEYSTORE_BASE64 is required." >&2
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/hyprradar-release.p12"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          echo "ANDROID_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+
+      - name: Build universal signed release APK
+        working-directory: mobile
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: >-
+          flutter build apk --release
+          --target-platform android-arm,android-arm64,android-x64
+
+      - name: Validate and package APK
+        id: package
+        env:
+          ASSET: ${{ steps.metadata.outputs.asset }}
+          EXPECTED_CERT_SHA256: f81c8c6014564eb9be0866fee60c1f7f669a29a3438ac8587aec0bd00fe19f1d
+          VERSION_CODE: ${{ steps.metadata.outputs.version_code }}
+          VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_apk="mobile/build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$source_apk"
+          mkdir -p dist
+          install -m 0644 "$source_apk" "dist/$ASSET"
+
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n 1)"
+          apksigner="$build_tools/apksigner"
+          aapt="$build_tools/aapt"
+          test -x "$apksigner"
+          test -x "$aapt"
+
+          signature_report="$RUNNER_TEMP/apksigner-report.txt"
+          "$apksigner" verify --verbose --print-certs "dist/$ASSET" | tee "$signature_report"
+          if grep -Fq "CN=Android Debug" "$signature_report"; then
+            echo "Refusing to publish an APK signed by the Android debug certificate." >&2
+            exit 1
+          fi
+          if ! grep -Fqx "Signer #1 certificate SHA-256 digest: $EXPECTED_CERT_SHA256" "$signature_report"; then
+            echo "Refusing to publish an APK that is not signed by HyprRadar's permanent certificate." >&2
+            exit 1
+          fi
+
+          badging="$RUNNER_TEMP/aapt-badging.txt"
+          "$aapt" dump badging "dist/$ASSET" | tee "$badging"
+          grep -Eq "^package: name='dev\.lystic\.radar' versionCode='${VERSION_CODE}' versionName='${VERSION_NAME}'" "$badging"
+          grep -Fq "application-label:'HyprRadar'" "$badging"
+          if grep -Fq "application-debuggable" "$badging"; then
+            echo "Refusing to publish a debuggable APK." >&2
+            exit 1
+          fi
+
+          (
+            cd dist
+            sha256sum "$ASSET" > "$ASSET.sha256"
+          )
+          {
+            echo "apk=dist/$ASSET"
+            echo "checksum=dist/$ASSET.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attach APK to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          APK: ${{ steps.package.outputs.apk }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+        run: gh release upload "$TAG" "$APK" "$CHECKSUM" --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload manual-run artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyprradar-${{ steps.metadata.outputs.tag }}-android
+          path: |
+            ${{ steps.package.outputs.apk }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

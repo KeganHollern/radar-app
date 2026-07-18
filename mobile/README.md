@@ -1,6 +1,6 @@
-# Anvil mobile
+# HyprRadar mobile
 
-Flutter iOS/Android client for the live-only Anvil service. It uses
+Flutter iOS/Android client for the live-only HyprRadar service. It uses
 MapLibre, shows current NEXRAD raster tiles and NWS alert polygons, and can keep
 the map centered on the device without changing the user's zoom.
 
@@ -82,17 +82,33 @@ flutter analyze
 flutter test
 ```
 
-## Android release signing
+## Android releases and signing
 
 Release builds never fall back to the Android debug certificate. To produce a
-signed APK or app bundle, copy the example and point it at the upload keystore:
+signed APK locally, copy the example and point it at the upload keystore:
 
 ```sh
 cp android/key.properties.example android/key.properties
-flutter build appbundle --release
+flutter build apk --release
 ```
 
 Fill in all four values in `android/key.properties`. That file and all
 `*.jks`/`*.keystore` files are ignored by Git; inject them from repository
 secrets in CI rather than committing credentials. Without `key.properties`,
 release output is intentionally unsigned while debug builds remain unchanged.
+
+Publishing a GitHub Release automatically builds HyprRadar's signed universal
+Android APK and attaches it with a SHA-256 checksum. The release tag must be
+`v<version>`, where `<version>` exactly matches the version name before `+` in
+`pubspec.yaml` (for example, `version: 1.0.1+11` uses tag `v1.0.1`). A manual run
+of the **Android release** workflow performs the same build and validation but
+only creates a temporary Actions artifact; it never publishes to a GitHub
+Release.
+
+The workflow requires the `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`
+repository secrets. Keep a secure backup of the same permanent signing key:
+Android will reject future HyprRadar updates signed with a different key.
+
+The permanent release certificate SHA-256 fingerprint is:
+`F8:1C:8C:60:14:56:4E:B9:BE:08:66:FE:E6:0C:1F:7F:66:9A:29:A3:43:8A:C8:58:7A:EC:0B:D0:0F:E1:9F:1D`.

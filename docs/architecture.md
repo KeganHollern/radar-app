@@ -1,8 +1,8 @@
-# Anvil architecture
+# HyprRadar architecture
 
 ## Product boundary
 
-Anvil is a dark, map-first Flutter application backed by a Go API at
+HyprRadar is a dark, map-first Flutter application backed by a Go API at
 `https://radar.lystic.dev`. It shows only the newest observation available. It
 does not expose forecasts, animation, historical scans, or a time selector.
 

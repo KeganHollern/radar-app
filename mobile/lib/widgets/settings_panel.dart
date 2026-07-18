@@ -93,7 +93,7 @@ class RadarSettingsPanel extends StatelessWidget {
           ),
         const SizedBox(height: 14),
         const Text(
-          'Hidden alerts remain active National Weather Service products; this setting only changes their display in Anvil.',
+          'Hidden alerts remain active National Weather Service products; this setting only changes their display in HyprRadar.',
           style: TextStyle(color: Flexoki.base500, fontSize: 12),
         ),
       ],

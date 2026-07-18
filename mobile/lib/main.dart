@@ -39,7 +39,7 @@ class _RadarAppState extends State<RadarApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Anvil',
+      title: 'HyprRadar',
       debugShowCheckedModeBanner: false,
       theme: Flexoki.darkTheme,
       darkTheme: Flexoki.darkTheme,
