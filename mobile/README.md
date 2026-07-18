@@ -56,6 +56,11 @@ App Transport Security exception. Production should remain HTTPS.
   control with the user.
 - Test follow mode on a physical device or with a simulated route. It uses the
   native location engine and retains the current map zoom while tracking.
+- Portrait keeps the established top status card and bottom map controls.
+  Landscape uses compact status and radar-control rails on the left and right,
+  leaving the center of the map visible. Radar modes, settings, alerts, alert
+  details, and source credits open in full-height side panels in landscape so
+  their content remains reachable on short screens.
 - Nearby chooses one high-detail radar for the whole viewport. Camera-idle
   updates drive the choice while browsing; accepted device locations own it in
   follow mode. A handoff margin prevents GPS jitter from repeatedly rebuilding

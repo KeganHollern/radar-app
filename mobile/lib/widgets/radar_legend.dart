@@ -8,9 +8,10 @@ import '../theme/flexoki_theme.dart';
 /// The color stops mirror the legends emitted by the NOAA/NWS RIDGE WMS
 /// products used by the backend.
 class RadarLegend extends StatelessWidget {
-  const RadarLegend({required this.mode, super.key});
+  const RadarLegend({required this.mode, this.compact = false, super.key});
 
   final RadarMode mode;
+  final bool compact;
 
   bool get _isVelocity => mode == RadarMode.stationVelocity;
 
@@ -44,24 +45,36 @@ class RadarLegend extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Text(
-                    _isVelocity ? 'RADIAL VELOCITY' : 'REFLECTIVITY',
-                    style: const TextStyle(
-                      color: Flexoki.paper,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.7,
+                  Flexible(
+                    child: Text(
+                      _isVelocity ? 'RADIAL VELOCITY' : 'REFLECTIVITY',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Flexoki.paper,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.7,
+                      ),
                     ),
                   ),
                   const Spacer(),
-                  Text(
-                    _isVelocity
-                        ? 'knots · RF = unresolved'
-                        : 'dBZ · <15 hidden',
-                    style: const TextStyle(
-                      color: Flexoki.base500,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
+                  Flexible(
+                    child: Text(
+                      _isVelocity
+                          ? compact
+                                ? 'knots'
+                                : 'knots · RF = unresolved'
+                          : compact
+                          ? 'dBZ'
+                          : 'dBZ · <15 hidden',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Flexoki.base500,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ],
@@ -113,12 +126,12 @@ class RadarLegend extends StatelessWidget {
                           const SizedBox(width: 4),
                           Expanded(
                             child: Row(
-                              children: const [
-                                Text('-100 · toward'),
-                                Spacer(),
-                                Text('0'),
-                                Spacer(),
-                                Text('+100 · away'),
+                              children: [
+                                Text(compact ? '-100' : '-100 · toward'),
+                                const Spacer(),
+                                const Text('0'),
+                                const Spacer(),
+                                Text(compact ? '+100' : '+100 · away'),
                               ],
                             ),
                           ),
@@ -126,11 +139,11 @@ class RadarLegend extends StatelessWidget {
                       )
                     : Row(
                         children: [
-                          const Text('15 · light'),
+                          Text(compact ? '15' : '15 · light'),
                           const Spacer(),
                           const Text('40'),
                           const Spacer(),
-                          const Text('70 · intense'),
+                          Text(compact ? '70' : '70 · intense'),
                         ],
                       ),
               ),

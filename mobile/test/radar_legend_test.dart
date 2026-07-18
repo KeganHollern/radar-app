@@ -71,4 +71,30 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('compact velocity legend fits the landscape control rail', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: Scaffold(
+            body: SizedBox(
+              width: 230,
+              child: RadarLegend(
+                mode: RadarMode.stationVelocity,
+                compact: true,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('knots'), findsOneWidget);
+    expect(find.text('-100'), findsOneWidget);
+    expect(find.text('+100'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

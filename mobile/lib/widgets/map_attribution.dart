@@ -66,16 +66,19 @@ class MapAttributionPanel extends StatelessWidget {
   const MapAttributionPanel({
     required this.mapAttributions,
     required this.onOpenLink,
+    this.scrollController,
     super.key,
   });
 
   final List<DataAttribution> mapAttributions;
   final AttributionLinkOpener onOpenLink;
+  final ScrollController? scrollController;
 
   @override
   Widget build(BuildContext context) {
     return SafeArea(
       child: SingleChildScrollView(
+        controller: scrollController,
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

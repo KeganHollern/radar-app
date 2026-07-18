@@ -18,7 +18,9 @@ import '../services/startup_location_resolver.dart';
 import '../services/startup_location_store.dart';
 import '../theme/flexoki_theme.dart';
 import '../widgets/map_attribution.dart';
+import '../widgets/landscape_side_panel.dart';
 import '../widgets/radar_legend.dart';
+import '../widgets/responsive_map_chrome.dart';
 import '../widgets/settings_panel.dart';
 import '../widgets/status_banner.dart';
 
@@ -720,84 +722,53 @@ class _RadarMapScreenState extends State<RadarMapScreen>
                     ),
                   ),
           ),
-          SafeArea(
-            minimum: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _LiveStatusCard(
-                  radar: _radar,
-                  onRefresh: () => _radar.refreshAll(userInitiated: true),
-                  onOpenAlerts: _showAlerts,
-                  onOpenSettings: _showSettings,
-                ),
-                if (_radar.radarError != null) ...[
-                  const SizedBox(height: 8),
-                  StatusBanner(
-                    icon: Icons.cloud_off_rounded,
-                    message: _radar.radarError!,
-                    onTap: _radar.refreshRadar,
-                  ),
-                ],
-                if (_radar.alertsStale || _radar.alertsError != null) ...[
-                  const SizedBox(height: 8),
-                  StatusBanner(
-                    icon: Icons.warning_amber_rounded,
-                    message: _alertStatusMessage(_radar),
-                    loading: _radar.isLoadingAlerts,
-                    loadingSemanticLabel: 'Refreshing weather alerts',
-                    onTap: () => _radar.refreshAlerts(userInitiated: true),
-                  ),
-                ],
-                if (_locationAccess != LocationAccess.granted &&
-                    _locationAccess != LocationAccess.checking) ...[
-                  const SizedBox(height: 8),
-                  StatusBanner(
-                    icon: Icons.location_off_rounded,
-                    message: _locationMessage,
-                    onTap: () async {
-                      if (_locationAccess == LocationAccess.deniedForever ||
-                          _locationAccess == LocationAccess.servicesDisabled) {
-                        await _location.openSettings(_locationAccess);
-                      }
-                      await _requestLocation();
-                    },
-                  ),
-                ],
-                const Spacer(),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          RadarLegend(mode: _radar.mode),
-                          const SizedBox(height: 8),
-                          _RadarControls(
-                            radar: _radar,
-                            onOpenModes: _showRadarModes,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        MapAttributionButton(
-                          credit: AppConfig.mapAttributionCompact,
-                          onPressed: _showMapAttribution,
-                        ),
-                        const SizedBox(height: 8),
-                        _PinButton(pinned: _pinLocation, onPressed: _togglePin),
-                      ],
-                    ),
-                  ],
-                ),
-              ],
+          ResponsiveMapChrome(
+            status: _LiveStatusCard(
+              radar: _radar,
+              onRefresh: () => _radar.refreshAll(userInitiated: true),
+              onOpenAlerts: _showAlerts,
+              onOpenSettings: _showSettings,
             ),
+            statusBanners: [
+              if (_radar.radarError != null)
+                StatusBanner(
+                  icon: Icons.cloud_off_rounded,
+                  message: _radar.radarError!,
+                  onTap: _radar.refreshRadar,
+                ),
+              if (_radar.alertsStale || _radar.alertsError != null)
+                StatusBanner(
+                  icon: Icons.warning_amber_rounded,
+                  message: _alertStatusMessage(_radar),
+                  loading: _radar.isLoadingAlerts,
+                  loadingSemanticLabel: 'Refreshing weather alerts',
+                  onTap: () => _radar.refreshAlerts(userInitiated: true),
+                ),
+              if (_locationAccess != LocationAccess.granted &&
+                  _locationAccess != LocationAccess.checking)
+                StatusBanner(
+                  icon: Icons.location_off_rounded,
+                  message: _locationMessage,
+                  onTap: () async {
+                    if (_locationAccess == LocationAccess.deniedForever ||
+                        _locationAccess == LocationAccess.servicesDisabled) {
+                      await _location.openSettings(_locationAccess);
+                    }
+                    await _requestLocation();
+                  },
+                ),
+            ],
+            legend: RadarLegend(mode: _radar.mode, compact: _isLandscape),
+            radarControls: _RadarControls(
+              radar: _radar,
+              onOpenModes: _showRadarModes,
+            ),
+            settingsButton: _SettingsButton(onPressed: _showSettings),
+            attributionButton: MapAttributionButton(
+              credit: AppConfig.mapAttributionCompact,
+              onPressed: _showMapAttribution,
+            ),
+            pinButton: _PinButton(pinned: _pinLocation, onPressed: _togglePin),
           ),
         ],
       ),
@@ -811,14 +782,50 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _ => 'Location permission is needed for your position and follow mode',
   };
 
+  bool get _isLandscape =>
+      MediaQuery.orientationOf(context) == Orientation.landscape;
+
   void _showRadarModes() {
+    if (_isLandscape) {
+      showLandscapeSidePanel<void>(
+        context: context,
+        barrierLabel: 'Close live radar controls',
+        builder: (context, scrollController) =>
+            RadarModePanel(radar: _radar, scrollController: scrollController),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
-      builder: (context) => _ModeSheet(radar: _radar),
+      builder: (context) => RadarModePanel(radar: _radar),
     );
   }
 
   void _showSettings() {
+    if (_isLandscape) {
+      showLandscapeSidePanel<void>(
+        context: context,
+        barrierLabel: 'Close settings',
+        builder: (context, scrollController) => StatefulBuilder(
+          builder: (context, setPanelState) => RadarSettingsPanel(
+            scrollController: scrollController,
+            landscape: true,
+            alertTypes: _radar.knownAlertTypes,
+            alertTypeCounts: _radar.alertTypeCounts,
+            isAlertTypeVisible: _radar.isAlertTypeVisible,
+            onAlertTypeChanged: (alertType, visible) {
+              _radar.setAlertTypeVisible(alertType, visible);
+              setPanelState(() {});
+            },
+            onShowAllAlertTypes: () {
+              _radar.showAllAlertTypes();
+              setPanelState(() {});
+            },
+          ),
+        ),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -848,6 +855,18 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   void _showMapAttribution() {
+    if (_isLandscape) {
+      showLandscapeSidePanel<void>(
+        context: context,
+        barrierLabel: 'Close data sources',
+        builder: (context, scrollController) => MapAttributionPanel(
+          scrollController: scrollController,
+          mapAttributions: AppConfig.mapAttributions,
+          onOpenLink: _openAttributionLink,
+        ),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -872,6 +891,18 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   void _showAlerts() {
+    if (_isLandscape) {
+      showLandscapeSidePanel<void>(
+        context: context,
+        barrierLabel: 'Close active weather alerts',
+        builder: (context, scrollController) => _AlertsListSheet(
+          alerts: _radar.alerts,
+          scrollController: scrollController,
+          onSelect: _showAlert,
+        ),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -890,6 +921,15 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   void _showAlert(WeatherAlert alert) {
+    if (_isLandscape) {
+      showLandscapeSidePanel<void>(
+        context: context,
+        barrierLabel: 'Close ${alert.event}',
+        builder: (context, scrollController) =>
+            _AlertSheet(alert: alert, scrollController: scrollController),
+      );
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -905,21 +945,34 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   Future<void> _showAlertsAtLocation(List<WeatherAlert> alerts) async {
-    final selected = await showModalBottomSheet<WeatherAlert>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: min(0.78, 0.24 + alerts.length * 0.14),
-        minChildSize: 0.32,
-        maxChildSize: 0.9,
+    WeatherAlert? selected;
+    if (_isLandscape) {
+      selected = await showLandscapeSidePanel<WeatherAlert>(
+        context: context,
+        barrierLabel: 'Close overlapping weather alerts',
         builder: (context, scrollController) => _AlertsAtLocationSheet(
           alerts: alerts,
           scrollController: scrollController,
           onSelect: (alert) => Navigator.pop(context, alert),
         ),
-      ),
-    );
+      );
+    } else {
+      selected = await showModalBottomSheet<WeatherAlert>(
+        context: context,
+        isScrollControlled: true,
+        builder: (context) => DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: min(0.78, 0.24 + alerts.length * 0.14),
+          minChildSize: 0.32,
+          maxChildSize: 0.9,
+          builder: (context, scrollController) => _AlertsAtLocationSheet(
+            alerts: alerts,
+            scrollController: scrollController,
+            onSelect: (alert) => Navigator.pop(context, alert),
+          ),
+        ),
+      );
+    }
     if (selected != null && mounted) _showAlert(selected);
   }
 
@@ -980,7 +1033,150 @@ class _LiveStatusCard extends StatelessWidget {
         radar.isLoadingRadar ||
         radar.isLoadingAlerts ||
         radar.isLoadingStations;
+    final landscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
+    if (landscape) {
+      return Card(
+        key: const ValueKey('landscape-live-status-card'),
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Flexible(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: badgeColor.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: badgeColor.withValues(alpha: 0.55),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.circle, size: 7, color: badgeColor),
+                          const SizedBox(width: 5),
+                          Flexible(
+                            child: Text(
+                              badgeLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Flexoki.paper,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.7,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: refreshing
+                        ? 'Refreshing live data'
+                        : 'Refresh now',
+                    constraints: const BoxConstraints.tightFor(
+                      width: 48,
+                      height: 48,
+                    ),
+                    padding: EdgeInsets.zero,
+                    onPressed: refreshing ? null : onRefresh,
+                    icon: refreshing
+                        ? const SizedBox.square(
+                            dimension: 17,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh_rounded, size: 20),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      radar.mode.shortLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  if (radar.alerts.isNotEmpty)
+                    Semantics(
+                      button: true,
+                      label: '${radar.alerts.length} active weather alerts',
+                      child: Tooltip(
+                        message: 'View active weather alerts',
+                        child: InkWell(
+                          onTap: onOpenAlerts,
+                          borderRadius: BorderRadius.circular(999),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              minWidth: 48,
+                              minHeight: 48,
+                            ),
+                            child: Center(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Flexoki.yellow.withValues(alpha: 0.16),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.warning_amber_rounded,
+                                      size: 16,
+                                      color: Flexoki.yellow,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      '${radar.alerts.length}',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 1),
+              Text(
+                status,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Flexoki.base500, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Card(
+      key: const ValueKey('portrait-live-status-card'),
       margin: EdgeInsets.zero,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
@@ -1192,90 +1388,143 @@ class _PinButton extends StatelessWidget {
   }
 }
 
-class _ModeSheet extends StatefulWidget {
-  const _ModeSheet({required this.radar});
+class _SettingsButton extends StatelessWidget {
+  const _SettingsButton({required this.onPressed});
 
-  final RadarController radar;
+  final VoidCallback onPressed;
 
   @override
-  State<_ModeSheet> createState() => _ModeSheetState();
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Alert display settings',
+      child: Material(
+        color: Flexoki.base100,
+        elevation: 9,
+        shadowColor: Colors.black87,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Flexoki.base300),
+        ),
+        child: InkWell(
+          key: const ValueKey('landscape-settings-button'),
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(16),
+          child: const SizedBox.square(
+            dimension: mapUtilityButtonDimension,
+            child: Icon(
+              Icons.settings_outlined,
+              size: 28,
+              color: Flexoki.paper,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
-class _ModeSheetState extends State<_ModeSheet> {
+class RadarModePanel extends StatefulWidget {
+  const RadarModePanel({required this.radar, this.scrollController, super.key});
+
+  final RadarController radar;
+  final ScrollController? scrollController;
+
+  @override
+  State<RadarModePanel> createState() => _RadarModePanelState();
+}
+
+class _RadarModePanelState extends State<RadarModePanel> {
   @override
   Widget build(BuildContext context) {
     final radar = widget.radar;
     final station = radar.selectedStation;
     final velocityEnabled = station == null || station.supportsVelocity;
+    final compact = widget.scrollController != null;
+    final children = <Widget>[
+      Text('Live radar', style: Theme.of(context).textTheme.headlineSmall),
+      const SizedBox(height: 4),
+      Text(
+        compact
+            ? 'Newest scan only · no forecast or timeline.'
+            : 'Only the newest available scan is shown. There is no forecast or playback timeline.',
+        style: const TextStyle(color: Flexoki.base500),
+      ),
+      const SizedBox(height: 12),
+      _ModeTile(
+        tileKey: const ValueKey('mode-nearby'),
+        compact: compact,
+        selected: radar.mode == RadarMode.aggregate,
+        icon: Icons.layers_rounded,
+        title: 'Nearby radar',
+        subtitle: 'Combined view from nearby stations',
+        onTap: () {
+          radar.selectMode(RadarMode.aggregate);
+          Navigator.pop(context);
+        },
+      ),
+      _ModeTile(
+        tileKey: const ValueKey('mode-station-reflectivity'),
+        compact: compact,
+        selected: radar.mode == RadarMode.stationReflectivity,
+        icon: Icons.radar_rounded,
+        title: 'Station reflectivity',
+        subtitle: station == null
+            ? 'Choose this, then tap a station on the map'
+            : '${station.name} (${station.id})',
+        onTap: () {
+          radar.selectMode(RadarMode.stationReflectivity);
+          Navigator.pop(context);
+        },
+      ),
+      _ModeTile(
+        tileKey: const ValueKey('mode-station-velocity'),
+        compact: compact,
+        selected: radar.mode == RadarMode.stationVelocity,
+        enabled: velocityEnabled,
+        icon: Icons.air_rounded,
+        title: 'Station velocity',
+        subtitle: station == null
+            ? 'Choose this, then tap a velocity-capable station'
+            : velocityEnabled
+            ? 'Radial wind velocity from ${station.id}'
+            : '${station.id} does not currently expose velocity',
+        onTap: () {
+          radar.selectMode(RadarMode.stationVelocity);
+          Navigator.pop(context);
+        },
+      ),
+      if (radar.mode.requiresStation && station != null) ...[
+        const Divider(height: 28),
+        const Text(
+          'ELEVATION',
+          style: TextStyle(
+            color: Flexoki.base500,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.1,
+          ),
+        ),
+        const SizedBox(height: 8),
+        _ElevationPicker(radar: radar),
+      ],
+    ];
+    if (widget.scrollController != null) {
+      return ListView(
+        key: const ValueKey('radar-mode-panel'),
+        controller: widget.scrollController,
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        children: children,
+      );
+    }
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
         child: Column(
+          key: const ValueKey('radar-mode-panel'),
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Live radar',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Only the newest available scan is shown. There is no forecast or playback timeline.',
-              style: TextStyle(color: Flexoki.base500),
-            ),
-            const SizedBox(height: 12),
-            _ModeTile(
-              selected: radar.mode == RadarMode.aggregate,
-              icon: Icons.layers_rounded,
-              title: 'Nearby radar',
-              subtitle: 'Combined view from nearby stations',
-              onTap: () {
-                radar.selectMode(RadarMode.aggregate);
-                Navigator.pop(context);
-              },
-            ),
-            _ModeTile(
-              selected: radar.mode == RadarMode.stationReflectivity,
-              icon: Icons.radar_rounded,
-              title: 'Station reflectivity',
-              subtitle: station == null
-                  ? 'Choose this, then tap a station on the map'
-                  : '${station.name} (${station.id})',
-              onTap: () {
-                radar.selectMode(RadarMode.stationReflectivity);
-                Navigator.pop(context);
-              },
-            ),
-            _ModeTile(
-              selected: radar.mode == RadarMode.stationVelocity,
-              enabled: velocityEnabled,
-              icon: Icons.air_rounded,
-              title: 'Station velocity',
-              subtitle: station == null
-                  ? 'Choose this, then tap a velocity-capable station'
-                  : velocityEnabled
-                  ? 'Radial wind velocity from ${station.id}'
-                  : '${station.id} does not currently expose velocity',
-              onTap: () {
-                radar.selectMode(RadarMode.stationVelocity);
-                Navigator.pop(context);
-              },
-            ),
-            if (radar.mode.requiresStation && station != null) ...[
-              const Divider(height: 28),
-              const Text(
-                'ELEVATION',
-                style: TextStyle(
-                  color: Flexoki.base500,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.1,
-                ),
-              ),
-              const SizedBox(height: 8),
-              _ElevationPicker(radar: radar),
-            ],
-          ],
+          children: children,
         ),
       ),
     );
@@ -1289,6 +1538,8 @@ class _ModeTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.tileKey,
+    this.compact = false,
     this.enabled = true,
   });
 
@@ -1298,16 +1549,23 @@ class _ModeTile extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+  final Key? tileKey;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
+      key: tileKey,
       enabled: enabled,
       selected: selected,
       contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+      dense: compact,
+      visualDensity: compact
+          ? const VisualDensity(horizontal: 0, vertical: -2)
+          : null,
       leading: Icon(icon, color: selected ? Flexoki.cyan : Flexoki.base500),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-      subtitle: Text(subtitle),
+      subtitle: Text(subtitle, maxLines: compact ? 1 : null),
       trailing: selected
           ? const Icon(Icons.check_circle_rounded, color: Flexoki.cyan)
           : null,
