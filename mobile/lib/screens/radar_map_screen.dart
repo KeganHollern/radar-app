@@ -1040,135 +1040,153 @@ class _LiveStatusCard extends StatelessWidget {
         key: const ValueKey('landscape-live-status-card'),
         margin: EdgeInsets.zero,
         child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Row(
-                children: [
-                  Flexible(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: badgeColor.withValues(alpha: 0.18),
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(
-                          color: badgeColor.withValues(alpha: 0.55),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: badgeColor.withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: badgeColor.withValues(alpha: 0.55),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.circle, size: 7, color: badgeColor),
+                                const SizedBox(width: 5),
+                                Flexible(
+                                  child: Text(
+                                    badgeLabel,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Flexoki.paper,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: 0.7,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.circle, size: 7, color: badgeColor),
-                          const SizedBox(width: 5),
-                          Flexible(
-                            child: Text(
-                              badgeLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Flexoki.paper,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 0.7,
+                        if (radar.alerts.isNotEmpty) ...[
+                          const SizedBox(width: 4),
+                          Semantics(
+                            button: true,
+                            label:
+                                '${radar.alerts.length} active weather alerts',
+                            child: Tooltip(
+                              message: 'View active weather alerts',
+                              child: InkWell(
+                                onTap: onOpenAlerts,
+                                borderRadius: BorderRadius.circular(999),
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    minWidth: 48,
+                                    minHeight: 48,
+                                  ),
+                                  child: Center(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Flexoki.yellow.withValues(
+                                          alpha: 0.16,
+                                        ),
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(
+                                            Icons.warning_amber_rounded,
+                                            size: 16,
+                                            color: Flexoki.yellow,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            '${radar.alerts.length}',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
                         ],
-                      ),
+                      ],
                     ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: refreshing
-                        ? 'Refreshing live data'
-                        : 'Refresh now',
-                    constraints: const BoxConstraints.tightFor(
-                      width: 48,
-                      height: 48,
-                    ),
-                    padding: EdgeInsets.zero,
-                    onPressed: refreshing ? null : onRefresh,
-                    icon: refreshing
-                        ? const SizedBox.square(
-                            dimension: 17,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh_rounded, size: 20),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 2),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
+                    const SizedBox(height: 4),
+                    Text(
                       radar.mode.shortLabel,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
-                  ),
-                  if (radar.alerts.isNotEmpty)
-                    Semantics(
-                      button: true,
-                      label: '${radar.alerts.length} active weather alerts',
-                      child: Tooltip(
-                        message: 'View active weather alerts',
-                        child: InkWell(
-                          onTap: onOpenAlerts,
-                          borderRadius: BorderRadius.circular(999),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(
-                              minWidth: 48,
-                              minHeight: 48,
-                            ),
-                            child: Center(
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Flexoki.yellow.withValues(alpha: 0.16),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(
-                                      Icons.warning_amber_rounded,
-                                      size: 16,
-                                      color: Flexoki.yellow,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      '${radar.alerts.length}',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
+                    const SizedBox(height: 1),
+                    Text(
+                      status,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Flexoki.base500,
+                        fontSize: 12,
                       ),
                     ),
-                ],
+                  ],
+                ),
               ),
-              const SizedBox(height: 1),
-              Text(
-                status,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Flexoki.base500, fontSize: 12),
+              const SizedBox(width: 8),
+              Material(
+                color: Flexoki.base100,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: const BorderSide(color: Flexoki.base300),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: IconButton(
+                  key: const ValueKey('landscape-refresh-button'),
+                  tooltip: refreshing ? 'Refreshing live data' : 'Refresh now',
+                  constraints: const BoxConstraints.tightFor(
+                    width: 48,
+                    height: 48,
+                  ),
+                  padding: EdgeInsets.zero,
+                  onPressed: refreshing ? null : onRefresh,
+                  icon: refreshing
+                      ? const SizedBox.square(
+                          dimension: 17,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded, size: 21),
+                ),
               ),
             ],
           ),
