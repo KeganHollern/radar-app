@@ -96,58 +96,76 @@ void main() {
     controller.dispose();
   });
 
-  test('a streamed batch is paced in observation order', () async {
-    var monotonicMs = 10000;
-    final api = _FakeApi(latest: _snapshot('baseline', const []));
-    final scheduler = _FakeScheduler();
-    final controller = LightningController(
-      api: api,
-      store: _MemoryStore(true),
-      monotonicMilliseconds: () => monotonicMs,
-      scheduleOnce: scheduler.once,
-      schedulePeriodic: scheduler.periodic,
-    );
+  test(
+    'the default spreads a streamed batch across the full 20-second cadence',
+    () async {
+      var monotonicMs = 10000;
+      final api = _FakeApi(latest: _snapshot('baseline', const []));
+      final scheduler = _FakeScheduler();
+      final controller = LightningController(
+        api: api,
+        store: _MemoryStore(true),
+        monotonicMilliseconds: () => monotonicMs,
+        scheduleOnce: scheduler.once,
+        schedulePeriodic: scheduler.periodic,
+      );
 
-    await controller.initialize();
-    await controller.setBounds(bounds);
-    api.streams.single.add(
-      LightningUpdate(
-        event: LightningStreamEvent.lightning,
-        snapshot: LightningSnapshot(
-          mode: LightningSourceMode.event,
-          generation: 'paced',
-          strikes: [
-            _strikeAt('newest', const Duration(milliseconds: 1000)),
-            _strikeAt('oldest', Duration.zero),
-            _strikeAt('middle', const Duration(milliseconds: 500)),
-          ],
+      await controller.initialize();
+      await controller.setBounds(bounds);
+      api.streams.single.add(
+        LightningUpdate(
+          event: LightningStreamEvent.lightning,
+          snapshot: LightningSnapshot(
+            mode: LightningSourceMode.event,
+            generation: 'paced',
+            strikes: [
+              _strikeAt('newest', const Duration(milliseconds: 1000)),
+              _strikeAt('oldest', Duration.zero),
+              _strikeAt('middle', const Duration(milliseconds: 500)),
+            ],
+          ),
         ),
-      ),
-    );
-    await _flushEvents();
+      );
+      await _flushEvents();
 
-    expect(_featureIds(controller.geoJson), ['oldest']);
+      expect(controller.batchPlaybackDuration, const Duration(seconds: 20));
+      expect(_featureIds(controller.geoJson), ['oldest']);
 
-    monotonicMs += 500;
-    scheduler.firePeriodic();
-    expect(_featureIds(controller.geoJson), ['oldest', 'middle']);
-    expect(_featureOpacity(controller.geoJson, 'oldest'), closeTo(0.5, 0.001));
-    expect(_featureOpacity(controller.geoJson, 'middle'), 1);
+      monotonicMs += 999;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['oldest']);
+      expect(
+        _featureOpacity(controller.geoJson, 'oldest'),
+        closeTo(0.001, 0.001),
+      );
 
-    monotonicMs += 500;
-    scheduler.firePeriodic();
-    expect(_featureIds(controller.geoJson), ['middle', 'newest']);
-    expect(_featureOpacity(controller.geoJson, 'middle'), closeTo(0.5, 0.001));
-    expect(_featureOpacity(controller.geoJson, 'newest'), 1);
+      monotonicMs += 1;
+      scheduler.firePeriodic();
+      expect(_features(controller.geoJson), isEmpty);
 
-    monotonicMs += 1000;
-    scheduler.firePeriodic();
-    expect(_features(controller.geoJson), isEmpty);
-    expect(scheduler.hasActivePeriodic, isFalse);
-    controller.dispose();
-  });
+      monotonicMs += 9000;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['middle']);
+      expect(_featureOpacity(controller.geoJson, 'middle'), 1);
 
-  test('long catch-up batches use a three-second playback ceiling', () async {
+      monotonicMs += 1000;
+      scheduler.firePeriodic();
+      expect(_features(controller.geoJson), isEmpty);
+
+      monotonicMs += 9000;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['newest']);
+      expect(_featureOpacity(controller.geoJson, 'newest'), 1);
+
+      monotonicMs += 1000;
+      scheduler.firePeriodic();
+      expect(_features(controller.geoJson), isEmpty);
+      expect(scheduler.hasActivePeriodic, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test('a configured short window compresses a long catch-up batch', () async {
     var monotonicMs = 20000;
     final api = _FakeApi(latest: _snapshot('baseline', const []));
     final scheduler = _FakeScheduler();
@@ -157,7 +175,7 @@ void main() {
       monotonicMilliseconds: () => monotonicMs,
       scheduleOnce: scheduler.once,
       schedulePeriodic: scheduler.periodic,
-      maxBatchPlaybackDuration: const Duration(seconds: 3),
+      batchPlaybackDuration: const Duration(seconds: 3),
     );
 
     await controller.initialize();
@@ -226,7 +244,11 @@ void main() {
     await _flushEvents();
     expect(_featureIds(controller.geoJson), ['middle-retained']);
 
-    monotonicMs += 1000;
+    monotonicMs += 19999;
+    scheduler.firePeriodic();
+    expect(_features(controller.geoJson), isEmpty);
+
+    monotonicMs += 1;
     scheduler.firePeriodic();
     expect(_featureIds(controller.geoJson), ['newest-retained']);
     controller.dispose();
@@ -287,6 +309,7 @@ void main() {
 
       // The newly received 5s flash is placed before both previously pending
       // flashes, while the already visible 0s flash continues its own fade.
+      // The merged future queue is rebased across one new 20-second window.
       expect(_featureIds(controller.geoJson), ['first-0s', 'new-5s']);
       expect(scheduler.periodicTasks, hasLength(1));
 
@@ -296,13 +319,17 @@ void main() {
 
       monotonicMs += 1;
       scheduler.firePeriodic();
-      expect(_featureIds(controller.geoJson), ['new-5s', 'first-10s']);
+      expect(_featureIds(controller.geoJson), ['new-5s']);
 
-      monotonicMs += 1200;
+      monotonicMs += 3400;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['first-10s']);
+
+      monotonicMs += 8000;
       scheduler.firePeriodic();
       expect(_featureIds(controller.geoJson), ['first-20s']);
 
-      monotonicMs += 1200;
+      monotonicMs += 8000;
       scheduler.firePeriodic();
       expect(_featureIds(controller.geoJson), ['new-30s']);
       controller.dispose();

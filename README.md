@@ -37,8 +37,8 @@ APK on an Android device and allow installation from that source when prompted.
 - tap-to-select WSR-88D stations with current reflectivity and radial velocity
 - active NWS alert polygons, persisted per-type visibility settings, overlap
   selection, event colors, and tap-through alert details
-- optional near-real-time GOES lightning flashes, briefly pulsed at their
-  approximate satellite-detected locations as new NOAA data arrives
+- optional GOES lightning flashes, paced across each roughly 20-second source
+  batch and briefly pulsed at their approximate satellite-detected locations
 - foreground radar and alert refresh, plus coalesced manual retry with visible
   progress and last-check freshness feedback
 - Android background notifications with independent per-type selection,

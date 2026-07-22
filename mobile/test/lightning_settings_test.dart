@@ -33,6 +33,8 @@ void main() {
 
     expect(find.text('Map layers'), findsOneWidget);
     expect(find.textContaining('not exact ground strikes'), findsOneWidget);
+    expect(find.textContaining('roughly 20-second batches'), findsOneWidget);
+    expect(find.textContaining('adds presentation delay'), findsOneWidget);
     expect(lightningSettingsSummary(controller), 'Off');
 
     await tester.tap(find.byKey(const ValueKey('lightning-layer-toggle')));

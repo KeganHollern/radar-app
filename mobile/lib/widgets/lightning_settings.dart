@@ -69,7 +69,7 @@ class LightningSettingsPage extends StatelessWidget {
                       style: TextStyle(fontWeight: FontWeight.w800),
                     ),
                     subtitle: const Text(
-                      'Pulse new satellite detections over the live radar map.',
+                      'Animate new satellite detections over the live radar map.',
                     ),
                   ),
                 ),
@@ -88,6 +88,11 @@ class LightningSettingsPage extends StatelessWidget {
                 const SizedBox(height: 7),
                 const Text(
                   'NOAA GOES satellites detect total lightning, including flashes within and between clouds as well as cloud-to-ground lightning. Each white bolt marks an approximate optical flash centroid and fades after about one second.',
+                  style: TextStyle(color: Flexoki.base700, fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'NOAA publishes detections in roughly 20-second batches. HyprRadar plays each batch across about 20 seconds to reduce bursts, which adds presentation delay and does not make the source truly real time.',
                   style: TextStyle(color: Flexoki.base700, fontSize: 13),
                 ),
                 const SizedBox(height: 10),

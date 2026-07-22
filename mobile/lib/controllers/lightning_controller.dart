@@ -28,9 +28,10 @@ typedef LightningSchedulePeriodic =
 /// reconnect baseline without animation.
 /// Only IDs first seen in a subsequent `lightning` event are shown, with their
 /// one-second fade measured from a local monotonic presentation clock. New
-/// flashes in each provider batch are replayed in observation order instead of
-/// appearing as one blob. Provider timestamps only determine relative pacing;
-/// their absolute delivery latency is intentionally ignored.
+/// flashes in each provider batch are replayed in observation order across the
+/// provider's roughly 20-second publication cadence instead of appearing as
+/// one blob. Provider timestamps only determine relative pacing; their absolute
+/// delivery latency is intentionally ignored.
 final class LightningController extends ChangeNotifier {
   LightningController({
     LightningDataSource? api,
@@ -40,7 +41,7 @@ final class LightningController extends ChangeNotifier {
     LightningSchedulePeriodic? schedulePeriodic,
     this.fadeDuration = const Duration(seconds: 1),
     this.fadeInterval = const Duration(milliseconds: 100),
-    this.maxBatchPlaybackDuration = const Duration(seconds: 3),
+    this.batchPlaybackDuration = const Duration(seconds: 20),
     this.reconnectBaseDelay = const Duration(seconds: 1),
     this.reconnectMaxDelay = const Duration(seconds: 30),
     this.maxSeenIds = 50000,
@@ -59,7 +60,7 @@ final class LightningController extends ChangeNotifier {
   final LightningSchedulePeriodic _schedulePeriodic;
   final Duration fadeDuration;
   final Duration fadeInterval;
-  final Duration maxBatchPlaybackDuration;
+  final Duration batchPlaybackDuration;
   final Duration reconnectBaseDelay;
   final Duration reconnectMaxDelay;
   final int maxSeenIds;
@@ -320,13 +321,16 @@ final class LightningController extends ChangeNotifier {
         .difference(firstObservation)
         .inMicroseconds
         .clamp(0, 1 << 62);
-    final playbackLimitMicroseconds = maxBatchPlaybackDuration.inMicroseconds
+    final playbackDurationMicroseconds = batchPlaybackDuration.inMicroseconds
         .clamp(0, 1 << 62);
-    final playbackScale =
-        observationSpanMicroseconds == 0 ||
-            observationSpanMicroseconds <= playbackLimitMicroseconds
-        ? 1.0
-        : playbackLimitMicroseconds / observationSpanMicroseconds;
+    // Normalize every batch with more than one observation bucket across the
+    // source's publication cadence. This smooths NOAA's approximately
+    // 20-second LCFA file deliveries while keeping equal observedAt values in
+    // one truly simultaneous bucket. A merged overlap is rebased from now and
+    // cannot extend the queue beyond one playback window.
+    final playbackScale = observationSpanMicroseconds == 0
+        ? 0.0
+        : playbackDurationMicroseconds / observationSpanMicroseconds;
 
     for (final strike in pending) {
       final observedOffsetMicroseconds = strike.observedAt
