@@ -24,11 +24,13 @@ typedef LightningSchedulePeriodic =
 /// Owns the optional, foreground-only lightning stream and the small transient
 /// GeoJSON collection consumed by MapLibre.
 ///
-/// Snapshot/reset events establish a reconnect baseline without animation.
+/// Snapshot/reset events clear any in-flight presentation and establish a
+/// reconnect baseline without animation.
 /// Only IDs first seen in a subsequent `lightning` event are shown, with their
-/// one-second fade measured from a local monotonic receipt clock. Provider
-/// observation timestamps are intentionally not used for animation because
-/// satellite products have inherent delivery latency.
+/// one-second fade measured from a local monotonic presentation clock. New
+/// flashes in each provider batch are replayed in observation order instead of
+/// appearing as one blob. Provider timestamps only determine relative pacing;
+/// their absolute delivery latency is intentionally ignored.
 final class LightningController extends ChangeNotifier {
   LightningController({
     LightningDataSource? api,
@@ -38,6 +40,7 @@ final class LightningController extends ChangeNotifier {
     LightningSchedulePeriodic? schedulePeriodic,
     this.fadeDuration = const Duration(seconds: 1),
     this.fadeInterval = const Duration(milliseconds: 100),
+    this.maxBatchPlaybackDuration = const Duration(seconds: 3),
     this.reconnectBaseDelay = const Duration(seconds: 1),
     this.reconnectMaxDelay = const Duration(seconds: 30),
     this.maxSeenIds = 50000,
@@ -56,6 +59,7 @@ final class LightningController extends ChangeNotifier {
   final LightningSchedulePeriodic _schedulePeriodic;
   final Duration fadeDuration;
   final Duration fadeInterval;
+  final Duration maxBatchPlaybackDuration;
   final Duration reconnectBaseDelay;
   final Duration reconnectMaxDelay;
   final int maxSeenIds;
@@ -255,34 +259,102 @@ final class LightningController extends ChangeNotifier {
 
   void _applyBaseline(LightningSnapshot fresh) {
     _snapshot = fresh;
+    _clearPresentation();
     _seedSeen(fresh.strikes);
   }
 
   void _applyLightning(LightningSnapshot fresh) {
     _snapshot = fresh;
-    final firstSeen = _monotonicMilliseconds();
-    var changed = false;
-    for (final strike in fresh.strikes) {
-      if (_markSeen(strike.id)) {
-        _active[strike.id] = _ActiveStrike(
-          strike: strike,
-          firstSeenMilliseconds: firstSeen,
-        );
-        changed = true;
+    final receivedAt = _monotonicMilliseconds();
+    final pending = <LightningStrike>[];
+    final pendingIds = <String>[];
+    for (final entry in _active.entries) {
+      if (entry.value.appearsAtMilliseconds > receivedAt) {
+        pending.add(entry.value.strike);
+        pendingIds.add(entry.key);
       }
     }
-    while (_active.length > maxActiveStrikes && _active.isNotEmpty) {
+    for (final strike in fresh.strikes) {
+      if (_markSeen(strike.id)) {
+        pending.add(strike);
+      }
+    }
+    if (pending.length == pendingIds.length) return;
+
+    // A second source update can arrive while an earlier batch is still being
+    // presented. Pull future flashes back into one chronological queue so the
+    // new batch cannot leapfrog them or extend an ever-growing backlog.
+    for (final id in pendingIds) {
+      _active.remove(id);
+    }
+
+    pending.sort((first, second) {
+      final observed = first.observedAt.compareTo(second.observedAt);
+      // Preserve genuinely simultaneous NOAA flashes as one presentation
+      // bucket while keeping their GeoJSON order deterministic.
+      return observed != 0 ? observed : first.id.compareTo(second.id);
+    });
+    final capacity = maxActiveStrikes < 0 ? 0 : maxActiveStrikes;
+    while (_active.length + pending.length > capacity && _active.isNotEmpty) {
       _active.remove(_active.keys.first);
-      changed = true;
     }
-    if (changed) {
-      _rebuildGeoJson(firstSeen, notify: false);
-      _ensureFadeTimer();
+    final pendingCapacity = capacity - _active.length;
+    if (pending.length > pendingCapacity) {
+      // Prefer the newest live flashes under extreme load. IDs discarded from
+      // presentation were already marked seen, so a cumulative snapshot cannot
+      // replay them later. Truncate before assigning presentation timestamps so
+      // the first retained flash still appears immediately.
+      pending.removeRange(0, pending.length - pendingCapacity);
     }
+    if (pending.isEmpty) {
+      _rebuildGeoJson(receivedAt, notify: false);
+      if (_active.isEmpty) {
+        _cancelFade?.call();
+        _cancelFade = null;
+      }
+      return;
+    }
+
+    final firstObservation = pending.first.observedAt;
+    final observationSpanMicroseconds = pending.last.observedAt
+        .difference(firstObservation)
+        .inMicroseconds
+        .clamp(0, 1 << 62);
+    final playbackLimitMicroseconds = maxBatchPlaybackDuration.inMicroseconds
+        .clamp(0, 1 << 62);
+    final playbackScale =
+        observationSpanMicroseconds == 0 ||
+            observationSpanMicroseconds <= playbackLimitMicroseconds
+        ? 1.0
+        : playbackLimitMicroseconds / observationSpanMicroseconds;
+
+    for (final strike in pending) {
+      final observedOffsetMicroseconds = strike.observedAt
+          .difference(firstObservation)
+          .inMicroseconds
+          .clamp(0, observationSpanMicroseconds);
+      final playbackOffsetMilliseconds =
+          (observedOffsetMicroseconds * playbackScale / 1000).round();
+      _active[strike.id] = _ActiveStrike(
+        strike: strike,
+        appearsAtMilliseconds: receivedAt + playbackOffsetMilliseconds,
+      );
+    }
+    _rebuildGeoJson(receivedAt, notify: false);
+    _ensureFadeTimer();
   }
 
   void _applyStatus(LightningSnapshot fresh) {
     _snapshot = fresh;
+  }
+
+  void _clearPresentation() {
+    _cancelFade?.call();
+    _cancelFade = null;
+    if (_active.isEmpty) return;
+    _active.clear();
+    _geoJson = lightningFeatureCollection(const []);
+    _revision++;
   }
 
   void _seedSeen(Iterable<LightningStrike> strikes) {
@@ -333,7 +405,8 @@ final class LightningController extends ChangeNotifier {
     final features = <Map<String, dynamic>>[];
     final expired = <String>[];
     for (final entry in _active.entries) {
-      final age = nowMilliseconds - entry.value.firstSeenMilliseconds;
+      final age = nowMilliseconds - entry.value.appearsAtMilliseconds;
+      if (age < 0) continue;
       if (age >= durationMs) {
         expired.add(entry.key);
         continue;
@@ -434,11 +507,11 @@ final class LightningController extends ChangeNotifier {
 final class _ActiveStrike {
   const _ActiveStrike({
     required this.strike,
-    required this.firstSeenMilliseconds,
+    required this.appearsAtMilliseconds,
   });
 
   final LightningStrike strike;
-  final int firstSeenMilliseconds;
+  final int appearsAtMilliseconds;
 }
 
 final Stopwatch _lightningStopwatch = Stopwatch()..start();

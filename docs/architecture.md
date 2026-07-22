@@ -221,8 +221,12 @@ Lightning is a separate foreground pipeline from the radar-generation stream.
 The public API exposes a short current snapshot and a dedicated update stream;
 the mobile client establishes the initial snapshot as a non-animated baseline.
 Only a flash ID first received afterward is drawn, using a crisp white bolt that
-fades for about one second from client receipt. The short server retention exists
-only for reconnect and deduplication—there is no lightning history or timeline.
+fades for about one second. Because NOAA publishes roughly 20-second LCFA
+objects, the client replays each newly received batch in its original
+`observedAt` order and relative cadence, compressed into a presentation window
+of at most three seconds so delayed catch-up data cannot create an unbounded or
+misleading backlog. The short server retention exists only for reconnect and
+deduplication—there is no lightning history or user-controlled timeline.
 Switching the optional layer off, backgrounding the app, or disposing the screen
 cancels its update connection, fade timer, and rendering work without touching
 the radar raster layer.

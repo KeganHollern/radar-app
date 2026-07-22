@@ -96,6 +96,341 @@ void main() {
     controller.dispose();
   });
 
+  test('a streamed batch is paced in observation order', () async {
+    var monotonicMs = 10000;
+    final api = _FakeApi(latest: _snapshot('baseline', const []));
+    final scheduler = _FakeScheduler();
+    final controller = LightningController(
+      api: api,
+      store: _MemoryStore(true),
+      monotonicMilliseconds: () => monotonicMs,
+      scheduleOnce: scheduler.once,
+      schedulePeriodic: scheduler.periodic,
+    );
+
+    await controller.initialize();
+    await controller.setBounds(bounds);
+    api.streams.single.add(
+      LightningUpdate(
+        event: LightningStreamEvent.lightning,
+        snapshot: LightningSnapshot(
+          mode: LightningSourceMode.event,
+          generation: 'paced',
+          strikes: [
+            _strikeAt('newest', const Duration(milliseconds: 1000)),
+            _strikeAt('oldest', Duration.zero),
+            _strikeAt('middle', const Duration(milliseconds: 500)),
+          ],
+        ),
+      ),
+    );
+    await _flushEvents();
+
+    expect(_featureIds(controller.geoJson), ['oldest']);
+
+    monotonicMs += 500;
+    scheduler.firePeriodic();
+    expect(_featureIds(controller.geoJson), ['oldest', 'middle']);
+    expect(_featureOpacity(controller.geoJson, 'oldest'), closeTo(0.5, 0.001));
+    expect(_featureOpacity(controller.geoJson, 'middle'), 1);
+
+    monotonicMs += 500;
+    scheduler.firePeriodic();
+    expect(_featureIds(controller.geoJson), ['middle', 'newest']);
+    expect(_featureOpacity(controller.geoJson, 'middle'), closeTo(0.5, 0.001));
+    expect(_featureOpacity(controller.geoJson, 'newest'), 1);
+
+    monotonicMs += 1000;
+    scheduler.firePeriodic();
+    expect(_features(controller.geoJson), isEmpty);
+    expect(scheduler.hasActivePeriodic, isFalse);
+    controller.dispose();
+  });
+
+  test('long catch-up batches use a three-second playback ceiling', () async {
+    var monotonicMs = 20000;
+    final api = _FakeApi(latest: _snapshot('baseline', const []));
+    final scheduler = _FakeScheduler();
+    final controller = LightningController(
+      api: api,
+      store: _MemoryStore(true),
+      monotonicMilliseconds: () => monotonicMs,
+      scheduleOnce: scheduler.once,
+      schedulePeriodic: scheduler.periodic,
+      maxBatchPlaybackDuration: const Duration(seconds: 3),
+    );
+
+    await controller.initialize();
+    await controller.setBounds(bounds);
+    api.streams.single.add(
+      LightningUpdate(
+        event: LightningStreamEvent.lightning,
+        snapshot: LightningSnapshot(
+          mode: LightningSourceMode.event,
+          generation: 'catch-up',
+          strikes: [
+            _strikeAt('latest', const Duration(seconds: 60)),
+            _strikeAt('earliest', Duration.zero),
+            _strikeAt('middle', const Duration(seconds: 30)),
+          ],
+        ),
+      ),
+    );
+    await _flushEvents();
+    expect(_featureIds(controller.geoJson), ['earliest']);
+
+    monotonicMs += 1500;
+    scheduler.firePeriodic();
+    expect(_featureIds(controller.geoJson), ['middle']);
+
+    monotonicMs += 1500;
+    scheduler.firePeriodic();
+    expect(_featureIds(controller.geoJson), ['latest']);
+    controller.dispose();
+  });
+
+  test('capacity truncation rebases the newest retained flashes', () async {
+    var monotonicMs = 25000;
+    final api = _FakeApi(latest: _snapshot('baseline', const []));
+    final scheduler = _FakeScheduler();
+    final controller = LightningController(
+      api: api,
+      store: _MemoryStore(true),
+      monotonicMilliseconds: () => monotonicMs,
+      scheduleOnce: scheduler.once,
+      schedulePeriodic: scheduler.periodic,
+      maxActiveStrikes: 2,
+    );
+
+    await controller.initialize();
+    await controller.setBounds(bounds);
+    final update = LightningUpdate(
+      event: LightningStreamEvent.lightning,
+      snapshot: LightningSnapshot(
+        mode: LightningSourceMode.event,
+        generation: 'over-capacity',
+        strikes: [
+          _strikeAt('oldest-dropped', Duration.zero),
+          _strikeAt('middle-retained', const Duration(seconds: 1)),
+          _strikeAt('newest-retained', const Duration(seconds: 2)),
+        ],
+      ),
+    );
+    api.streams.single.add(update);
+    await _flushEvents();
+
+    expect(_featureIds(controller.geoJson), ['middle-retained']);
+
+    // The cumulative full snapshot must not replay the capacity-dropped ID.
+    api.streams.single.add(update);
+    await _flushEvents();
+    expect(_featureIds(controller.geoJson), ['middle-retained']);
+
+    monotonicMs += 1000;
+    scheduler.firePeriodic();
+    expect(_featureIds(controller.geoJson), ['newest-retained']);
+    controller.dispose();
+  });
+
+  test(
+    'an overlapping batch merges and accelerates the pending queue',
+    () async {
+      var monotonicMs = 30000;
+      final api = _FakeApi(latest: _snapshot('baseline', const []));
+      final scheduler = _FakeScheduler();
+      final controller = LightningController(
+        api: api,
+        store: _MemoryStore(true),
+        monotonicMilliseconds: () => monotonicMs,
+        scheduleOnce: scheduler.once,
+        schedulePeriodic: scheduler.periodic,
+      );
+
+      await controller.initialize();
+      await controller.setBounds(bounds);
+      api.streams.single.add(
+        LightningUpdate(
+          event: LightningStreamEvent.lightning,
+          snapshot: LightningSnapshot(
+            mode: LightningSourceMode.event,
+            generation: 'first-batch',
+            strikes: [
+              _strikeAt('first-20s', const Duration(seconds: 20)),
+              _strikeAt('first-0s', Duration.zero),
+              _strikeAt('first-10s', const Duration(seconds: 10)),
+            ],
+          ),
+        ),
+      );
+      await _flushEvents();
+      expect(_featureIds(controller.geoJson), ['first-0s']);
+
+      monotonicMs += 500;
+      scheduler.firePeriodic();
+      api.streams.single.add(
+        LightningUpdate(
+          event: LightningStreamEvent.lightning,
+          snapshot: LightningSnapshot(
+            mode: LightningSourceMode.event,
+            generation: 'overlapping-batch',
+            strikes: [
+              _strikeAt('first-0s', Duration.zero),
+              _strikeAt('new-30s', const Duration(seconds: 30)),
+              _strikeAt('new-5s', const Duration(seconds: 5)),
+              _strikeAt('first-20s', const Duration(seconds: 20)),
+              _strikeAt('first-10s', const Duration(seconds: 10)),
+            ],
+          ),
+        ),
+      );
+      await _flushEvents();
+
+      // The newly received 5s flash is placed before both previously pending
+      // flashes, while the already visible 0s flash continues its own fade.
+      expect(_featureIds(controller.geoJson), ['first-0s', 'new-5s']);
+      expect(scheduler.periodicTasks, hasLength(1));
+
+      monotonicMs += 599;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['new-5s']);
+
+      monotonicMs += 1;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['new-5s', 'first-10s']);
+
+      monotonicMs += 1200;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['first-20s']);
+
+      monotonicMs += 1200;
+      scheduler.firePeriodic();
+      expect(_featureIds(controller.geoJson), ['new-30s']);
+      controller.dispose();
+    },
+  );
+
+  test('equal observation times form one stable simultaneous bucket', () async {
+    final api = _FakeApi(latest: _snapshot('baseline', const []));
+    final scheduler = _FakeScheduler();
+    final controller = LightningController(
+      api: api,
+      store: _MemoryStore(true),
+      scheduleOnce: scheduler.once,
+      schedulePeriodic: scheduler.periodic,
+    );
+
+    await controller.initialize();
+    await controller.setBounds(bounds);
+    api.streams.single.add(
+      LightningUpdate(
+        event: LightningStreamEvent.lightning,
+        snapshot: LightningSnapshot(
+          mode: LightningSourceMode.event,
+          generation: 'tied',
+          strikes: [
+            _strikeAt('zulu', Duration.zero),
+            _strikeAt('alpha', Duration.zero),
+            _strikeAt('middle', Duration.zero),
+          ],
+        ),
+      ),
+    );
+    await _flushEvents();
+
+    expect(_featureIds(controller.geoJson), ['alpha', 'middle', 'zulu']);
+    expect(scheduler.periodicTasks, hasLength(1));
+    controller.dispose();
+  });
+
+  test('a repeated full generation does not restart a flash', () async {
+    var monotonicMs = 40000;
+    final api = _FakeApi(latest: _snapshot('baseline', const []));
+    final scheduler = _FakeScheduler();
+    final controller = LightningController(
+      api: api,
+      store: _MemoryStore(true),
+      monotonicMilliseconds: () => monotonicMs,
+      scheduleOnce: scheduler.once,
+      schedulePeriodic: scheduler.periodic,
+    );
+
+    await controller.initialize();
+    await controller.setBounds(bounds);
+    final update = LightningUpdate(
+      event: LightningStreamEvent.lightning,
+      id: 'same-generation',
+      snapshot: _snapshot('same-generation', ['once', 'once']),
+    );
+    api.streams.single.add(update);
+    await _flushEvents();
+    final firstRevision = controller.revision;
+    expect(_featureIds(controller.geoJson), ['once']);
+
+    monotonicMs += 250;
+    api.streams.single.add(update);
+    await _flushEvents();
+    expect(controller.revision, firstRevision);
+    expect(_opacity(controller.geoJson), 1);
+    expect(scheduler.periodicTasks, hasLength(1));
+
+    scheduler.firePeriodic();
+    expect(_opacity(controller.geoJson), closeTo(0.75, 0.001));
+    controller.dispose();
+  });
+
+  test('snapshot and reset events cancel visible and future flashes', () async {
+    for (final baselineEvent in [
+      LightningStreamEvent.snapshot,
+      LightningStreamEvent.reset,
+    ]) {
+      var monotonicMs = 50000;
+      final api = _FakeApi(latest: _snapshot('baseline', const []));
+      final scheduler = _FakeScheduler();
+      final controller = LightningController(
+        api: api,
+        store: _MemoryStore(true),
+        monotonicMilliseconds: () => monotonicMs,
+        scheduleOnce: scheduler.once,
+        schedulePeriodic: scheduler.periodic,
+      );
+
+      await controller.initialize();
+      await controller.setBounds(bounds);
+      api.streams.single.add(
+        LightningUpdate(
+          event: LightningStreamEvent.lightning,
+          snapshot: LightningSnapshot(
+            mode: LightningSourceMode.event,
+            generation: 'paced',
+            strikes: [
+              _strikeAt('visible', Duration.zero),
+              _strikeAt('future', const Duration(seconds: 20)),
+            ],
+          ),
+        ),
+      );
+      await _flushEvents();
+      expect(_featureIds(controller.geoJson), ['visible']);
+      expect(controller.hasActiveStrikes, isTrue);
+
+      api.streams.single.add(
+        LightningUpdate(
+          event: baselineEvent,
+          snapshot: _snapshot('new-baseline', ['visible', 'future']),
+        ),
+      );
+      await _flushEvents();
+      expect(_features(controller.geoJson), isEmpty);
+      expect(controller.hasActiveStrikes, isFalse);
+      expect(scheduler.hasActivePeriodic, isFalse);
+
+      monotonicMs += 10000;
+      scheduler.firePeriodic();
+      expect(_features(controller.geoJson), isEmpty);
+      controller.dispose();
+    }
+  });
+
   test(
     'reconnect snapshots seed missed ids instead of replaying flashes',
     () async {
@@ -148,14 +483,23 @@ void main() {
     api.streams.single.add(
       LightningUpdate(
         event: LightningStreamEvent.lightning,
-        snapshot: _snapshot('generation-1', ['new']),
+        snapshot: LightningSnapshot(
+          mode: LightningSourceMode.event,
+          generation: 'generation-1',
+          strikes: [
+            _strikeAt('visible', Duration.zero),
+            _strikeAt('future', const Duration(seconds: 20)),
+          ],
+        ),
       ),
     );
     await _flushEvents();
     expect(controller.hasActiveStrikes, isTrue);
+    expect(_featureIds(controller.geoJson), ['visible']);
 
     await controller.setForeground(false);
     expect(controller.hasActiveStrikes, isFalse);
+    expect(_features(controller.geoJson), isEmpty);
     expect(api.streams.first.hasListener, isFalse);
     expect(scheduler.hasActiveTasks, isFalse);
 
@@ -302,6 +646,14 @@ LightningStrike _strike(String id) => LightningStrike(
   kind: 'satellite-detected lightning flash',
 );
 
+LightningStrike _strikeAt(String id, Duration offset) => LightningStrike(
+  id: id,
+  latitude: 30.27,
+  longitude: -97.74,
+  observedAt: DateTime.utc(2026, 7, 18, 12).add(offset),
+  kind: 'satellite-detected lightning flash',
+);
+
 List<dynamic> _features(Map<String, dynamic> geoJson) =>
     geoJson['features'] as List<dynamic>;
 
@@ -311,6 +663,13 @@ List<String> _featureIds(Map<String, dynamic> geoJson) => _features(
 
 num _opacity(Map<String, dynamic> geoJson) =>
     ((_features(geoJson).single as Map)['properties'] as Map)['opacity'] as num;
+
+num _featureOpacity(Map<String, dynamic> geoJson, String id) {
+  final feature = _features(
+    geoJson,
+  ).cast<Map>().singleWhere((feature) => feature['id'] == id);
+  return (feature['properties'] as Map)['opacity'] as num;
+}
 
 Future<void> _flushEvents() => Future<void>.delayed(Duration.zero);
 
