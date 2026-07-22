@@ -25,6 +25,7 @@ import '../widgets/landscape_side_panel.dart';
 import '../widgets/lightning_settings.dart';
 import '../widgets/map_attribution.dart';
 import '../widgets/radar_legend.dart';
+import '../widgets/radar_scan_status.dart';
 import '../widgets/responsive_map_chrome.dart';
 import '../widgets/settings_panel.dart';
 import '../widgets/status_banner.dart';
@@ -83,6 +84,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   bool _lightningStyleInstalled = false;
   RadarLayerCandidate? _radarSwapAwaitingIdle;
   RadarLayerCandidate? _radarSwapReady;
+  RadarSnapshot? _renderedRadarSnapshot;
   int _renderedStationRevision = -1;
   int _renderedAlertRevision = -1;
   int _renderedLightningRevision = -1;
@@ -220,6 +222,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _lightningStyleInstalled = false;
     _radarLayers.reset();
     _clearRadarSwapReadiness();
+    _setRenderedRadarSnapshot(null);
     _renderedStationRevision = -1;
     _renderedAlertRevision = -1;
     _renderedLightningRevision = -1;
@@ -503,6 +506,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     }
 
     final nextKey = _radar.radarLayerKey;
+    final nextSnapshot = _radar.snapshot;
     final tileTemplate = _radar.activeTileTemplate;
     final effectiveKey = tileTemplate == null ? '' : nextKey;
     if (effectiveKey.isEmpty &&
@@ -516,6 +520,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     if (force && _radarLayers.hasLayers) {
       await _retireRadarCandidates(map, _radarLayers.reset().retired);
       _clearRadarSwapReadiness();
+      _setRenderedRadarSnapshot(null);
       if (!_isCurrentStyle(map, styleGeneration)) return;
     }
 
@@ -534,6 +539,12 @@ class _RadarMapScreenState extends State<RadarMapScreen>
       _radarLayers.reset();
       _clearRadarSwapReadiness();
       return;
+    }
+
+    if (_radarLayers.active?.key == effectiveKey) {
+      _setRenderedRadarSnapshot(nextSnapshot);
+    } else if (_radarLayers.active == null) {
+      _setRenderedRadarSnapshot(null);
     }
 
     final pending = _radarLayers.pending;
@@ -670,6 +681,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     }
     final currentTemplate = _radar.activeTileTemplate;
     final currentKey = currentTemplate == null ? '' : _radar.radarLayerKey;
+    final currentSnapshot = _radar.snapshot;
     if (_radar.isLoadingRadar ||
         !identical(_radarSwapReady, pending) ||
         currentKey != pending.key) {
@@ -687,6 +699,12 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     final promotion = _radarLayers.promote();
     if (!identical(promotion.candidate, pending)) return;
     _clearRadarSwapReadiness();
+    _setRenderedRadarSnapshot(currentSnapshot);
+  }
+
+  void _setRenderedRadarSnapshot(RadarSnapshot? snapshot) {
+    if (!mounted || identical(_renderedRadarSnapshot, snapshot)) return;
+    setState(() => _renderedRadarSnapshot = snapshot);
   }
 
   RasterLayerProperties _radarLayerProperties(
@@ -957,6 +975,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
           ResponsiveMapChrome(
             status: _LiveStatusCard(
               radar: _radar,
+              renderedSnapshot: _renderedRadarSnapshot,
               onRefresh: () => _radar.refreshAll(userInitiated: true),
               onOpenAlerts: _showAlerts,
               onOpenSettings: _showSettings,
@@ -1252,21 +1271,22 @@ const Map<String, dynamic> _emptyFeatureCollection = {
 class _LiveStatusCard extends StatelessWidget {
   const _LiveStatusCard({
     required this.radar,
+    required this.renderedSnapshot,
     required this.onRefresh,
     required this.onOpenAlerts,
     required this.onOpenSettings,
   });
 
   final RadarController radar;
+  final RadarSnapshot? renderedSnapshot;
   final Future<void> Function() onRefresh;
   final VoidCallback onOpenAlerts;
   final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
-    final observedAt = radar.snapshot?.observedAt.toLocal();
     final unavailable = radar.radarError != null;
-    final stale = radar.snapshot?.stale == true;
+    final stale = renderedSnapshot?.stale == true;
     final badgeLabel = unavailable
         ? 'OFFLINE'
         : stale
@@ -1277,15 +1297,6 @@ class _LiveStatusCard extends StatelessWidget {
         : stale
         ? Flexoki.yellow
         : Flexoki.red;
-    final status = radar.isLoadingRadar && radar.snapshot == null
-        ? 'Connecting…'
-        : observedAt == null
-        ? 'Waiting for live scan'
-        : unavailable
-        ? 'Last scan · ${_relativeAge(observedAt)}'
-        : stale
-        ? 'Stale scan · ${_relativeAge(observedAt)}'
-        : 'Latest scan · ${_relativeAge(observedAt)}';
     final refreshing =
         radar.isLoadingRadar ||
         radar.isLoadingAlerts ||
@@ -1408,10 +1419,10 @@ class _LiveStatusCard extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 1),
-                    Text(
-                      status,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    RadarScanStatusText(
+                      renderedSnapshot: renderedSnapshot,
+                      isLoading: radar.isLoadingRadar,
+                      unavailable: unavailable,
                       style: const TextStyle(
                         color: Flexoki.base500,
                         fontSize: 12,
@@ -1484,8 +1495,10 @@ class _LiveStatusCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
-                  Text(
-                    status,
+                  RadarScanStatusText(
+                    renderedSnapshot: renderedSnapshot,
+                    isLoading: radar.isLoadingRadar,
+                    unavailable: unavailable,
                     style: const TextStyle(
                       color: Flexoki.base500,
                       fontSize: 12,
