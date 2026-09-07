@@ -63,6 +63,10 @@ final class WorkmanagerAlertNotificationScheduler
       await Workmanager().cancelByUniqueName(alertNotificationUniqueWorkName);
       return;
     }
+    // Reconcile the callback handle as well as the periodic task. The launch
+    // initialization may have failed, or Android may have restored old work.
+    await initializeAlertNotificationBackground();
+    await LocalWeatherAlertNotifier().initialize();
     await Workmanager().registerPeriodicTask(
       alertNotificationUniqueWorkName,
       alertNotificationTaskName,

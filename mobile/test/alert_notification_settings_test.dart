@@ -9,6 +9,37 @@ import 'package:radar_mobile/theme/flexoki_theme.dart';
 import 'package:radar_mobile/widgets/settings_panel.dart';
 
 void main() {
+  testWidgets('test delivery is available without enabling background checks', (
+    tester,
+  ) async {
+    var sent = 0;
+    final controller = AlertNotificationController(
+      store: _MemoryStore(AlertNotificationPreferences.defaults()),
+      permissions: _FakePermissions(_granted),
+      scheduler: _FakeScheduler(),
+      sendTestNotification: () async {
+        sent++;
+      },
+    );
+    await controller.initialize();
+    await _pumpSettings(tester, controller);
+    await tester.tap(
+      find.byKey(const ValueKey('settings-destination-notifications')),
+    );
+    await tester.pumpAndSettle();
+
+    final button = find.byKey(const ValueKey('send-test-alert-notification'));
+    await tester.ensureVisible(button);
+    await tester.pumpAndSettle();
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+
+    expect(sent, 1);
+    expect(find.textContaining('Test sent.'), findsOneWidget);
+    expect(controller.preferences.monitoringEnabled, isFalse);
+    controller.dispose();
+  });
+
   testWidgets(
     'denied notification permission disables controls and offers recovery',
     (tester) async {
@@ -36,6 +67,57 @@ void main() {
       );
       expect(tornado.value, isTrue);
       expect(tornado.onChanged, isNull);
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'background location disclosure immediately precedes the permission request',
+    (tester) async {
+      final permissions = _FakePermissions(
+        const AlertNotificationPermissionSnapshot(
+          supported: true,
+          notificationsGranted: true,
+          foregroundLocationGranted: true,
+          backgroundLocationGranted: false,
+        ),
+      );
+      final controller = AlertNotificationController(
+        store: _MemoryStore(
+          AlertNotificationPreferences.defaults().copyWith(
+            backgroundLocationDisclosureVersion:
+                currentBackgroundLocationDisclosureVersion,
+          ),
+        ),
+        permissions: permissions,
+        scheduler: _FakeScheduler(),
+      );
+      await controller.initialize();
+      await _pumpSettings(tester, controller);
+
+      await tester.tap(
+        find.byKey(const ValueKey('settings-destination-notifications')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Enable background location'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('background-location-disclosure-continue')),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('even when the app is closed'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('HTTPS request body'), findsOneWidget);
+      expect(permissions.backgroundRequests, 0);
+
+      await tester.tap(
+        find.byKey(const ValueKey('background-location-disclosure-continue')),
+      );
+      await tester.pumpAndSettle();
+      expect(permissions.backgroundRequests, 1);
       controller.dispose();
     },
   );
@@ -160,13 +242,17 @@ final class _FakePermissions implements AlertNotificationPermissionGateway {
   _FakePermissions(this.value);
 
   final AlertNotificationPermissionSnapshot value;
+  int backgroundRequests = 0;
 
   @override
   Future<bool> openSettings() async => true;
 
   @override
   Future<AlertNotificationPermissionSnapshot>
-  requestBackgroundLocation() async => value;
+  requestBackgroundLocation() async {
+    backgroundRequests++;
+    return value;
+  }
 
   @override
   Future<AlertNotificationPermissionSnapshot> requestNotifications() async =>

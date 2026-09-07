@@ -543,6 +543,44 @@ void main() {
   });
 
   test(
+    'closed lightning streams stop reporting live and back off retries',
+    () async {
+      final api = _FakeApi(latest: _snapshot('baseline', const []));
+      final scheduler = _FakeScheduler();
+      final controller = LightningController(
+        api: api,
+        store: _MemoryStore(true),
+        scheduleOnce: scheduler.once,
+        schedulePeriodic: scheduler.periodic,
+      );
+      addTearDown(controller.dispose);
+      await controller.initialize();
+      await controller.setBounds(bounds);
+
+      for (final seconds in [1, 2, 4]) {
+        await api.streams.last.close();
+        await _flushEvents();
+        expect(controller.status, LightningStatus.connecting);
+        expect(scheduler.onceTasks.last.duration, Duration(seconds: seconds));
+        scheduler.fireNextOnce();
+        await _flushEvents();
+      }
+
+      api.streams.last.add(
+        LightningUpdate(
+          event: LightningStreamEvent.status,
+          snapshot: _snapshot('healthy', const []),
+        ),
+      );
+      await _flushEvents();
+      expect(controller.status, LightningStatus.live);
+      await api.streams.last.close();
+      await _flushEvents();
+      expect(scheduler.onceTasks.last.duration, const Duration(seconds: 1));
+    },
+  );
+
+  test(
     '503 marks the optional source unavailable without starting a stream',
     () async {
       final api = _FakeApi(

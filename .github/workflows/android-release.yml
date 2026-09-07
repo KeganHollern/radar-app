@@ -15,8 +15,10 @@ concurrency:
 
 jobs:
   apk:
-    name: Build signed APK
+    name: Build signed Android artifacts
     runs-on: ubuntu-latest
+    env:
+      PERMANENT_ANDROID_CERT_SHA256: f81c8c6014564eb9be0866fee60c1f7f669a29a3438ac8587aec0bd00fe19f1d
     steps:
       - name: Check out release source
         uses: actions/checkout@v6
@@ -69,11 +71,13 @@ jobs:
           fi
 
           asset="hyprradar-${tag}-android.apk"
+          bundle_asset="hyprradar-${tag}-play.aab"
           {
             echo "tag=$tag"
             echo "version_name=$version_name"
             echo "version_code=$version_code"
             echo "asset=$asset"
+            echo "bundle_asset=$bundle_asset"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
@@ -88,20 +92,66 @@ jobs:
         working-directory: mobile
         run: flutter test
 
-      - name: Prepare release keystore
+      - name: Prepare release keystores
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PLAY_UPLOAD_KEYSTORE_BASE64: ${{ secrets.PLAY_UPLOAD_KEYSTORE_BASE64 }}
+          PLAY_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEYSTORE_PASSWORD }}
+          PLAY_UPLOAD_KEY_ALIAS: ${{ secrets.PLAY_UPLOAD_KEY_ALIAS }}
+          PLAY_UPLOAD_KEY_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEY_PASSWORD }}
+          PLAY_UPLOAD_CERT_SHA256: ${{ vars.PLAY_UPLOAD_CERT_SHA256 }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$ANDROID_KEYSTORE_BASE64" ]]; then
-            echo "ANDROID_KEYSTORE_BASE64 is required." >&2
-            exit 1
-          fi
+
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "$name is required." >&2
+              exit 1
+            fi
+          done
           keystore="$RUNNER_TEMP/hyprradar-release.p12"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
           chmod 600 "$keystore"
           echo "ANDROID_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+
+          play_names=(
+            PLAY_UPLOAD_KEYSTORE_BASE64
+            PLAY_UPLOAD_KEYSTORE_PASSWORD
+            PLAY_UPLOAD_KEY_ALIAS
+            PLAY_UPLOAD_KEY_PASSWORD
+            PLAY_UPLOAD_CERT_SHA256
+          )
+          play_values=0
+          for name in "${play_names[@]}"; do
+            if [[ -n "${!name:-}" ]]; then
+              ((play_values += 1))
+            fi
+          done
+          if (( play_values != 0 && play_values != ${#play_names[@]} )); then
+            echo "Configure every PLAY_UPLOAD_* secret and the PLAY_UPLOAD_CERT_SHA256 repository variable, or none of them." >&2
+            exit 1
+          fi
+
+          expected_aab_cert="$PERMANENT_ANDROID_CERT_SHA256"
+          play_keystore="$keystore"
+          if (( play_values == ${#play_names[@]} )); then
+            play_keystore="$RUNNER_TEMP/hyprradar-play-upload.p12"
+            printf '%s' "$PLAY_UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$play_keystore"
+            chmod 600 "$play_keystore"
+            expected_aab_cert="$(printf '%s' "$PLAY_UPLOAD_CERT_SHA256" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
+          fi
+          if [[ ! "$expected_aab_cert" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "PLAY_UPLOAD_CERT_SHA256 must be one SHA-256 certificate fingerprint." >&2
+            exit 1
+          fi
+          {
+            echo "PLAY_UPLOAD_KEYSTORE_PATH=$play_keystore"
+            echo "PLAY_UPLOAD_EXPECTED_CERT_SHA256=$expected_aab_cert"
+          } >> "$GITHUB_ENV"
 
       - name: Build universal signed release APK
         working-directory: mobile
@@ -113,11 +163,22 @@ jobs:
           flutter build apk --release
           --target-platform android-arm,android-arm64,android-x64
 
-      - name: Validate and package APK
+      - name: Build signed Play App Bundle
+        working-directory: mobile
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ env.PLAY_UPLOAD_KEYSTORE_PATH }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.PLAY_UPLOAD_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
+        run: flutter build appbundle --release
+
+      - name: Validate and package Android artifacts
         id: package
         env:
           ASSET: ${{ steps.metadata.outputs.asset }}
-          EXPECTED_CERT_SHA256: f81c8c6014564eb9be0866fee60c1f7f669a29a3438ac8587aec0bd00fe19f1d
+          BUNDLE_ASSET: ${{ steps.metadata.outputs.bundle_asset }}
+          EXPECTED_APK_CERT_SHA256: ${{ env.PERMANENT_ANDROID_CERT_SHA256 }}
+          EXPECTED_AAB_CERT_SHA256: ${{ env.PLAY_UPLOAD_EXPECTED_CERT_SHA256 }}
           VERSION_CODE: ${{ steps.metadata.outputs.version_code }}
           VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
         shell: bash
@@ -142,7 +203,7 @@ jobs:
             exit 1
           fi
           grep -Fqx "Number of signers: 1" "$signature_report"
-          if ! grep -Eq "certificate SHA-256 digest: ${EXPECTED_CERT_SHA256}$" "$signature_report"; then
+          if ! grep -Eq "certificate SHA-256 digest: ${EXPECTED_APK_CERT_SHA256}$" "$signature_report"; then
             echo "Refusing to publish an APK that is not signed by HyprRadar's permanent certificate." >&2
             exit 1
           fi
@@ -150,29 +211,63 @@ jobs:
           badging="$RUNNER_TEMP/aapt-badging.txt"
           "$aapt" dump badging "dist/$ASSET" | tee "$badging"
           grep -Eq "^package: name='dev\.lystic\.radar' versionCode='${VERSION_CODE}' versionName='${VERSION_NAME}'" "$badging"
+          grep -Fqx "targetSdkVersion:'36'" "$badging"
           grep -Fq "application-label:'HyprRadar'" "$badging"
           if grep -Fq "application-debuggable" "$badging"; then
             echo "Refusing to publish a debuggable APK." >&2
             exit 1
           fi
+          manifest="$RUNNER_TEMP/aapt-manifest.txt"
+          "$aapt" dump xmltree "dist/$ASSET" AndroidManifest.xml > "$manifest"
+          if grep -Fq "android:foregroundServiceType" "$manifest"; then
+            echo "Refusing to publish an undeclared location foreground service." >&2
+            exit 1
+          fi
+          resources="$RUNNER_TEMP/aapt-resources.txt"
+          "$aapt" dump resources "dist/$ASSET" > "$resources"
+          grep -Fq "dev.lystic.radar:drawable/ic_stat_radar" "$resources"
+
+          source_aab="mobile/build/app/outputs/bundle/release/app-release.aab"
+          test -s "$source_aab"
+          jarsigner -verify "$source_aab"
+          certificate="$RUNNER_TEMP/aab-certificate.txt"
+          keytool -printcert -jarfile "$source_aab" | tee "$certificate"
+          actual_cert_sha256="$(sed -nE 's/^[[:space:]]*SHA256:[[:space:]]*//p' "$certificate" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          if [[ "$actual_cert_sha256" != "$EXPECTED_AAB_CERT_SHA256" ]]; then
+            echo "Refusing to publish an AAB that is not signed by the expected Play upload certificate." >&2
+            exit 1
+          fi
+          bundle_contents="$RUNNER_TEMP/aab-contents.txt"
+          unzip -Z1 "$source_aab" > "$bundle_contents"
+          grep -Fqx "base/res/drawable/ic_stat_radar.xml" "$bundle_contents"
+          grep -Fqx "base/res/xml/backup_rules.xml" "$bundle_contents"
+          grep -Fqx "base/res/xml/data_extraction_rules.xml" "$bundle_contents"
+          install -m 0644 "$source_aab" "dist/$BUNDLE_ASSET"
 
           (
             cd dist
             sha256sum "$ASSET" > "$ASSET.sha256"
+            sha256sum "$BUNDLE_ASSET" > "$BUNDLE_ASSET.sha256"
           )
           {
             echo "apk=dist/$ASSET"
-            echo "checksum=dist/$ASSET.sha256"
+            echo "apk_checksum=dist/$ASSET.sha256"
+            echo "aab=dist/$BUNDLE_ASSET"
+            echo "aab_checksum=dist/$BUNDLE_ASSET.sha256"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Attach APK to GitHub Release
+      - name: Attach Android artifacts to GitHub Release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.metadata.outputs.tag }}
           APK: ${{ steps.package.outputs.apk }}
-          CHECKSUM: ${{ steps.package.outputs.checksum }}
-        run: gh release upload "$TAG" "$APK" "$CHECKSUM" --clobber --repo "$GITHUB_REPOSITORY"
+          APK_CHECKSUM: ${{ steps.package.outputs.apk_checksum }}
+          AAB: ${{ steps.package.outputs.aab }}
+          AAB_CHECKSUM: ${{ steps.package.outputs.aab_checksum }}
+        run: >-
+          gh release upload "$TAG" "$APK" "$APK_CHECKSUM" "$AAB" "$AAB_CHECKSUM"
+          --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Upload manual-run artifact
         if: github.event_name == 'workflow_dispatch'
@@ -181,7 +276,9 @@ jobs:
           name: hyprradar-${{ steps.metadata.outputs.tag }}-android
           path: |
             ${{ steps.package.outputs.apk }}
-            ${{ steps.package.outputs.checksum }}
+            ${{ steps.package.outputs.apk_checksum }}
+            ${{ steps.package.outputs.aab }}
+            ${{ steps.package.outputs.aab_checksum }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

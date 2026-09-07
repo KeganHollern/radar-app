@@ -38,3 +38,25 @@ func TestCacheCountsSourceVersionTowardByteLimit(t *testing.T) {
 		t.Fatal("entry exceeding the byte limit through its source revision was cached")
 	}
 }
+
+func TestCachePurgeExpiredRemovesOneOffKeys(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := New(4, 1024)
+	c.Put("expired", Value{Body: []byte("old"), ExpiresAt: now, StaleUntil: now.Add(time.Second)})
+	c.Put("current", Value{Body: []byte("new"), ExpiresAt: now.Add(time.Hour), StaleUntil: now.Add(time.Hour)})
+
+	if removed := c.PurgeExpired(now.Add(2 * time.Second)); removed != 1 {
+		t.Fatalf("removed %d entries, want 1", removed)
+	}
+	if _, _, ok := c.Get("expired", now); ok {
+		t.Fatal("expired one-off key survived the purge")
+	}
+	if _, state, ok := c.Get("current", now); !ok || state != Hit {
+		t.Fatalf("current entry was removed: state=%s ok=%v", state, ok)
+	}
+
+	c.Delete("current")
+	if _, _, ok := c.Get("current", now); ok {
+		t.Fatal("deleted entry remained in cache")
+	}
+}

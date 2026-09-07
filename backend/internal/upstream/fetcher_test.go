@@ -114,6 +114,126 @@ func TestFetcherServesStaleOnInvalidUpstreamResponse(t *testing.T) {
 	}
 }
 
+func TestFetcherValidatedBodyIsNotCachedAfterValidationFailure(t *testing.T) {
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := "invalid"
+		if calls.Add(1) > 1 {
+			body = "valid"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+	fetcher := NewFetcher(client, cache.New(10, 1024), "radar-test", 1024, time.Minute)
+	validate := func(body []byte) error {
+		if string(body) != "valid" {
+			return errors.New("unexpected schema")
+		}
+		return nil
+	}
+
+	if _, err := fetcher.GetValidated(context.Background(), "stations", "https://example.test/stations", "application/json", time.Hour, validate, "application/json"); err == nil {
+		t.Fatal("invalid body was accepted")
+	}
+	for range 2 {
+		result, err := fetcher.GetValidated(context.Background(), "stations", "https://example.test/stations", "application/json", time.Hour, validate, "application/json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(result.Value.Body) != "valid" {
+			t.Fatalf("body = %q", result.Value.Body)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream called %d times, want 2", calls.Load())
+	}
+}
+
+func TestFetcherValidatedBodyRejectsFreshEntryFromUnvalidatedCaller(t *testing.T) {
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := "invalid"
+		if calls.Add(1) > 1 {
+			body = "valid"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+	fetcher := NewFetcher(client, cache.New(10, 1024), "radar-test", 1024, time.Minute)
+	if _, err := fetcher.Get(context.Background(), "stations", "https://example.test/stations", "application/json", time.Hour, "application/json"); err != nil {
+		t.Fatal(err)
+	}
+	validate := func(body []byte) error {
+		if string(body) != "valid" {
+			return errors.New("unexpected schema")
+		}
+		return nil
+	}
+
+	result, err := fetcher.GetValidated(context.Background(), "stations", "https://example.test/stations", "application/json", time.Hour, validate, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Value.Body) != "valid" || result.State != cache.Miss {
+		t.Fatalf("unexpected validated result: %#v", result)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream called %d times, want 2", calls.Load())
+	}
+}
+
+func TestFetcherValidatedBodyFallsBackToPreviouslyValidatedStaleValue(t *testing.T) {
+	now := time.Now().UTC()
+	responseCache := cache.New(10, 1024)
+	responseCache.Put("stations", cache.Value{
+		Body:       []byte("last good"),
+		FetchedAt:  now.Add(-time.Hour),
+		CheckedAt:  now.Add(-time.Hour),
+		ExpiresAt:  now.Add(-time.Second),
+		StaleUntil: now.Add(time.Minute),
+	})
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader("invalid")),
+			Request:    r,
+		}, nil
+	})}
+	fetcher := NewFetcher(client, responseCache, "radar-test", 1024, time.Minute)
+	result, err := fetcher.GetValidated(
+		context.Background(),
+		"stations",
+		"https://example.test/stations",
+		"application/json",
+		time.Hour,
+		func(body []byte) error {
+			if string(body) != "last good" {
+				return errors.New("unexpected schema")
+			}
+			return nil
+		},
+		"application/json",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != cache.Stale || string(result.Value.Body) != "last good" {
+		t.Fatalf("unexpected fallback: %#v", result)
+	}
+}
+
 func TestFetcherDeriveCachesAndCoalescesBuilds(t *testing.T) {
 	fetcher := NewFetcher(http.DefaultClient, cache.New(32, 1<<20), "radar-test", 1<<20, time.Minute)
 	started := make(chan struct{})

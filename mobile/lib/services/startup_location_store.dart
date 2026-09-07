@@ -34,6 +34,7 @@ final class SharedPreferencesStartupLocationStore
   }) : _clock = clock ?? DateTime.now;
 
   static const double maximumMapLatitude = 85.05112878;
+  static const double _storedCoordinateScale = 1000;
 
   final DateTime Function() _clock;
   final Duration maximumAge;
@@ -41,19 +42,22 @@ final class SharedPreferencesStartupLocationStore
 
   @override
   Future<StartupLocation?> load() async {
+    SharedPreferences? preferences;
     try {
-      final preferences = await SharedPreferences.getInstance();
+      preferences = await SharedPreferences.getInstance();
       final encoded = preferences.getString(_startupLocationKey);
       if (encoded == null) return null;
 
       final decoded = jsonDecode(encoded);
       if (decoded is! Map<String, dynamic> || decoded['schema'] != 1) {
+        await preferences.remove(_startupLocationKey);
         return null;
       }
       final latitude = decoded['latitude'];
       final longitude = decoded['longitude'];
       final observedAtMillis = decoded['observedAtMillis'];
       if (latitude is! num || longitude is! num || observedAtMillis is! int) {
+        await preferences.remove(_startupLocationKey);
         return null;
       }
 
@@ -65,6 +69,7 @@ final class SharedPreferencesStartupLocationStore
           lat > maximumMapLatitude ||
           lon < -180 ||
           lon > 180) {
+        await preferences.remove(_startupLocationKey);
         return null;
       }
 
@@ -75,6 +80,7 @@ final class SharedPreferencesStartupLocationStore
       final now = _clock().toUtc();
       if (observedAt.isAfter(now.add(maximumFutureSkew)) ||
           now.difference(observedAt) > maximumAge) {
+        await preferences.remove(_startupLocationKey);
         return null;
       }
 
@@ -83,8 +89,12 @@ final class SharedPreferencesStartupLocationStore
         observedAt: observedAt,
       );
     } catch (_) {
-      // Startup location is an optimization. Preference/plugin/JSON failures
-      // must never prevent the map from opening.
+      // Corrupt location data should not survive once it has been detected.
+      try {
+        await preferences?.remove(_startupLocationKey);
+      } catch (_) {
+        // Startup location is optional; cleanup failure must not block launch.
+      }
       return null;
     }
   }
@@ -102,13 +112,19 @@ final class SharedPreferencesStartupLocationStore
       return;
     }
 
+    // Neighborhood startup does not need an exact coordinate. Persist only
+    // about 100-meter precision to reduce the sensitivity of the saved value.
+    final storedLat =
+        (lat * _storedCoordinateScale).roundToDouble() / _storedCoordinateScale;
+    final storedLon =
+        (lon * _storedCoordinateScale).roundToDouble() / _storedCoordinateScale;
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString(
       _startupLocationKey,
       jsonEncode({
         'schema': 1,
-        'latitude': lat,
-        'longitude': lon,
+        'latitude': storedLat,
+        'longitude': storedLon,
         'observedAtMillis': location.observedAt.toUtc().millisecondsSinceEpoch,
       }),
     );

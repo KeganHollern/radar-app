@@ -16,6 +16,7 @@ import '../controllers/startup_camera_focus.dart';
 import '../models/alert_selection.dart';
 import '../models/lightning_models.dart';
 import '../models/radar_models.dart';
+import '../services/alert_notification_permissions.dart';
 import '../services/location_service.dart';
 import '../services/native_startup_location_source.dart';
 import '../services/startup_location_resolver.dart';
@@ -114,7 +115,6 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     _radar = RadarController()..addListener(_onRadarChanged);
     _alertNotifications = AlertNotificationController();
     _lightning = LightningController()..addListener(_onLightningChanged);
-    unawaited(_prepareInitialCamera());
     unawaited(_radar.initialize());
     unawaited(_lightning.initialize());
     unawaited(_initializeLocationAndNotifications());
@@ -125,7 +125,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     if (state == AppLifecycleState.resumed) {
       unawaited(_lightning.setForeground(true));
       unawaited(_radar.resume());
-      unawaited(_requestLocation());
+      unawaited(_refreshLocationAccess());
       unawaited(_alertNotifications.refreshPermissions());
     } else {
       unawaited(_lightning.setForeground(false));
@@ -146,8 +146,15 @@ class _RadarMapScreenState extends State<RadarMapScreen>
     });
   }
 
-  Future<void> _requestLocation() async {
-    final access = await _location.requestAccess();
+  Future<void> _requestLocation() => _updateLocationAccess(request: true);
+
+  Future<void> _refreshLocationAccess() =>
+      _updateLocationAccess(request: false);
+
+  Future<void> _updateLocationAccess({required bool request}) async {
+    final access = request
+        ? await _location.requestAccess()
+        : await _location.checkAccess();
     if (!mounted) return;
     setState(() => _locationAccess = access);
     if (access == LocationAccess.granted && _pinLocation) {
@@ -156,38 +163,48 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   }
 
   Future<void> _initializeLocationAndNotifications() async {
-    await _requestLocation();
-    await _alertNotifications.initialize();
-    if (!mounted || !_alertNotifications.needsOnboarding) return;
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted || !_alertNotifications.needsOnboarding) return;
-    final enable = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        scrollable: true,
-        title: const Text('Weather alerts while you’re away'),
-        content: const Text(
-          'HyprRadar can check selected National Weather Service alerts about every 15 minutes while the app is closed. Nearby checks need notification permission and “Allow all the time” location access. Android may delay background work to save battery.\n\nYour location is rounded to roughly 100 meters and sent through the radar service to NWS only to request alerts covering that point. It is not written to persistent storage. When every alert type is off, HyprRadar cancels background checks.',
-        ),
-        actions: [
-          TextButton(
-            key: const ValueKey('alert-notification-onboarding-decline'),
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Not now'),
+    try {
+      await _alertNotifications.initialize();
+      if (!mounted) return;
+      if (_alertNotifications.needsOnboarding) {
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted || !_alertNotifications.needsOnboarding) return;
+        final enable = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            scrollable: true,
+            title: const Text('Weather alerts while you’re away'),
+            content: const Text(backgroundLocationDisclosureText),
+            actions: [
+              TextButton(
+                key: const ValueKey('alert-notification-onboarding-decline'),
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Not now'),
+              ),
+              FilledButton.icon(
+                key: const ValueKey('alert-notification-onboarding-enable'),
+                onPressed: () => Navigator.pop(context, true),
+                icon: const Icon(Icons.notifications_active_outlined),
+                label: const Text('Enable alerts'),
+              ),
+            ],
           ),
-          FilledButton.icon(
-            key: const ValueKey('alert-notification-onboarding-enable'),
-            onPressed: () => Navigator.pop(context, true),
-            icon: const Icon(Icons.notifications_active_outlined),
-            label: const Text('Enable alerts'),
-          ),
-        ],
-      ),
-    );
-    await _alertNotifications.completeOnboarding(
-      requestPermissions: enable == true,
-    );
+        );
+        await _alertNotifications.completeOnboarding(
+          requestPermissions: enable == true,
+        );
+      }
+    } catch (error) {
+      debugPrint('Unable to initialize background alerts: $error');
+    } finally {
+      if (mounted) {
+        // Do not access the native location cache before the background-use
+        // disclosure. A new foreground prompt remains user-initiated.
+        await _prepareInitialCamera();
+        await _refreshLocationAccess();
+      }
+    }
   }
 
   void _onRadarChanged() {
@@ -828,7 +845,7 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   Future<void> _togglePin() async {
     if (_locationAccess != LocationAccess.granted) {
       await _requestLocation();
-      if (_locationAccess != LocationAccess.granted) return;
+      if (!mounted || _locationAccess != LocationAccess.granted) return;
     }
     final next = !_pinLocation;
     if (next) _startupCameraFocus.abandon();
@@ -895,18 +912,12 @@ class _RadarMapScreenState extends State<RadarMapScreen>
   bool _containsVisibleRegion(
     LightningBounds subscribed,
     LatLngBounds visible,
-  ) {
-    if (visible.southwest.latitude < subscribed.south ||
-        visible.northeast.latitude > subscribed.north) {
-      return false;
-    }
-    bool containsLongitude(double longitude) =>
-        subscribed.west <= subscribed.east
-        ? longitude >= subscribed.west && longitude <= subscribed.east
-        : longitude >= subscribed.west || longitude <= subscribed.east;
-    return containsLongitude(visible.southwest.longitude) &&
-        containsLongitude(visible.northeast.longitude);
-  }
+  ) => subscribed.containsViewport(
+    west: visible.southwest.longitude,
+    south: visible.southwest.latitude,
+    east: visible.northeast.longitude,
+    north: visible.northeast.latitude,
+  );
 
   void _onCameraMove(CameraPosition _) {
     // A readiness signal belongs to the viewport that produced it. The staged
@@ -1715,6 +1726,31 @@ class RadarModePanel extends StatefulWidget {
 }
 
 class _RadarModePanelState extends State<RadarModePanel> {
+  @override
+  void initState() {
+    super.initState();
+    widget.radar.addListener(_onRadarChanged);
+  }
+
+  @override
+  void didUpdateWidget(RadarModePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.radar != widget.radar) {
+      oldWidget.radar.removeListener(_onRadarChanged);
+      widget.radar.addListener(_onRadarChanged);
+    }
+  }
+
+  void _onRadarChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.radar.removeListener(_onRadarChanged);
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final radar = widget.radar;

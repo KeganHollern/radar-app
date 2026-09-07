@@ -62,6 +62,7 @@ func TestLandingPage(t *testing.T) {
 		`role="img" aria-label="HyprRadar app showing live radar`,
 		`href="https://github.com/KeganHollern/radar-app"`,
 		`href="https://lystic.dev"`,
+		`href="/privacy">Privacy</a>`,
 		`Live radar. No timeline.`,
 		`Current radar only`,
 		`Warnings on the map`,

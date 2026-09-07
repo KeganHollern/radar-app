@@ -580,7 +580,7 @@ const landingPage = `<!doctype html>
   </main>
 
   <footer class="site-footer shell">
-    <span>© Lystic · Live weather awareness, without the timeline.</span>
+    <span>© Lystic · Live weather awareness, without the timeline. · <a href="/privacy">Privacy</a></span>
     <span>Data from <a href="https://www.noaa.gov">NOAA</a> and the <a href="https://www.weather.gov">National Weather Service</a>.</span>
   </footer>
 </body>

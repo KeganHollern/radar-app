@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -5,12 +7,12 @@ import 'package:radar_mobile/models/alert_notification_models.dart';
 import 'package:radar_mobile/services/alert_notification_api.dart';
 
 void main() {
-  test('nearby checks send only a rounded point to the radar API', () async {
-    Uri? requested;
+  test('nearby checks send a rounded point in a POST body', () async {
+    http.Request? requested;
     final api = HttpAlertNotificationApi(
       baseUrl: 'https://radar.lystic.dev/',
       client: MockClient((request) async {
-        requested = request.url;
+        requested = request;
         return http.Response(_alerts, 200);
       }),
     );
@@ -24,8 +26,14 @@ void main() {
       ),
     );
 
-    expect(requested?.path, '/api/v1/alerts');
-    expect(requested?.queryParameters, {'point': '30.267,-97.743'});
+    expect(requested?.method, 'POST');
+    expect(requested?.url.path, '/api/v1/alerts/nearby');
+    expect(requested?.url.query, isEmpty);
+    expect(jsonDecode(requested!.body), {
+      'latitude': 30.267,
+      'longitude': -97.743,
+    });
+    expect(requested!.body, isNot(contains('30.267153')));
     expect(result.alerts.single.id, 'test-alert');
     api.close();
   });
@@ -64,6 +72,37 @@ void main() {
     );
     api.close();
   });
+
+  test(
+    'a missing nearby endpoint retries until the server is deployed',
+    () async {
+      final api = HttpAlertNotificationApi(
+        baseUrl: 'https://radar.lystic.dev',
+        client: MockClient((_) async => http.Response('', 404)),
+      );
+
+      await expectLater(
+        api.fetchActiveAlerts(
+          scope: AlertNotificationScope.nearby,
+          point: AlertNotificationPoint(
+            latitude: 41.878,
+            longitude: -87.630,
+            observedAt: DateTime.now(),
+          ),
+        ),
+        throwsA(
+          isA<AlertNotificationApiException>()
+              .having((error) => error.transient, 'transient', isTrue)
+              .having(
+                (error) => error.message,
+                'message',
+                contains('deployed'),
+              ),
+        ),
+      );
+      api.close();
+    },
+  );
 
   test('unchanged nationwide checks use ETag and skip body decoding', () async {
     final state = _MemoryRequestStateStore();

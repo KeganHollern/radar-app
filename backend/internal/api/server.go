@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,17 +85,33 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Run(ctx context.Context) {
+	go s.runCacheJanitor(ctx)
 	s.lightningProvider.Run(ctx)
+}
+
+func (s *Server) runCacheJanitor(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.fetcher.PurgeExpired(now.UTC())
+		}
+	}
 }
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.landing)
+	mux.HandleFunc("GET /privacy", s.privacy)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /api/v1/config", s.clientConfig)
 	mux.HandleFunc("GET /api/v1/stations", s.stations)
 	mux.HandleFunc("GET /api/v1/alerts", s.alerts)
+	mux.HandleFunc("POST /api/v1/alerts/nearby", s.nearbyAlerts)
 	mux.HandleFunc("GET /api/v1/radar/latest", s.latest)
 	mux.HandleFunc("GET /api/v1/radar/tiles/{product}/{station}/{elevation}/{z}/{x}/{y}", s.tile)
 	mux.HandleFunc("GET /api/v1/updates", s.updates)
@@ -277,7 +296,16 @@ func normalizedLightningRetention(value time.Duration) time.Duration {
 }
 
 func (s *Server) stations(w http.ResponseWriter, r *http.Request) {
-	result, err := s.fetcher.Get(r.Context(), "stations", s.config.StationsURL, "application/geo+json,application/json", s.config.StationTTL, "application/geo+json", "application/json")
+	result, err := s.fetcher.GetValidated(
+		r.Context(),
+		"stations",
+		s.config.StationsURL,
+		"application/geo+json,application/json",
+		s.config.StationTTL,
+		radar.ValidateStationCatalog,
+		"application/geo+json",
+		"application/json",
+	)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "upstream_unavailable", err.Error())
 		return
@@ -296,7 +324,65 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	raw, err := s.fetcher.Get(r.Context(), "alerts:"+target, target, "application/geo+json", s.config.AlertTTL, "application/geo+json", "application/json")
+	cacheControl := "public, max-age=10, stale-if-error=300"
+	if strings.TrimSpace(r.URL.Query().Get("point")) != "" {
+		// Backward compatibility for older mobile clients. Keep location-scoped
+		// responses out of browsers and shared edge caches.
+		cacheControl = "private, no-store"
+	}
+	s.serveAlerts(w, r, target, cacheControl)
+}
+
+type nearbyAlertsRequest struct {
+	Latitude  *float64 `json:"latitude"`
+	Longitude *float64 `json:"longitude"`
+}
+
+func (s *Server) nearbyAlerts(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "invalid_request", "Content-Type must be application/json")
+		return
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	var request nearbyAlertsRequest
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "body must contain one JSON location object")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_request", "body must contain one JSON location object")
+		return
+	}
+	if request.Latitude == nil || request.Longitude == nil ||
+		math.IsNaN(*request.Latitude) || math.IsInf(*request.Latitude, 0) ||
+		math.IsNaN(*request.Longitude) || math.IsInf(*request.Longitude, 0) ||
+		*request.Latitude < -90 || *request.Latitude > 90 ||
+		*request.Longitude < -180 || *request.Longitude > 180 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "latitude or longitude is outside its valid range")
+		return
+	}
+	point := fmt.Sprintf(
+		"%.3f,%.3f",
+		math.Round(*request.Latitude*1000)/1000,
+		math.Round(*request.Longitude*1000)/1000,
+	)
+	target, err := s.alertsURL(url.Values{"point": {point}})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	// POST keeps the location out of URL access logs. Never let a shared HTTP
+	// cache reuse one point's alert response for another request body.
+	s.serveAlerts(w, r, target, "private, no-store")
+}
+
+func (s *Server) serveAlerts(w http.ResponseWriter, r *http.Request, target, cacheControl string) {
+	cacheKey := "alerts:" + s.privateScopeKey(target)
+	raw, err := s.fetcher.GetValidated(r.Context(), cacheKey, target, "application/geo+json", s.config.AlertTTL, func(body []byte) error {
+		_, err := decodeAlerts(body)
+		return err
+	}, "application/geo+json", "application/json")
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "upstream_unavailable", err.Error())
 		return
@@ -306,7 +392,13 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "invalid_upstream_response", err.Error())
 		return
 	}
-	writeCached(w, r, http.StatusOK, result.Value.Body, "application/geo+json", result, "public, max-age=10, stale-if-error=300")
+	writeCached(w, r, http.StatusOK, result.Value.Body, "application/geo+json", result, cacheControl)
+}
+
+func (s *Server) privateScopeKey(scope string) string {
+	mac := hmac.New(sha256.New, []byte(s.config.AggregateTokenKey))
+	_, _ = mac.Write([]byte(scope))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // enrichedAlerts coalesces and briefly caches the expensive national alert
@@ -316,9 +408,8 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 // Keeping the derived TTL equal to AlertTTL still lets unchanged collections
 // make bounded progress resolving previously uncached zone geometry.
 func (s *Server) enrichedAlerts(ctx context.Context, target string, raw upstream.Result) (upstream.Result, error) {
-	scopeHash := sha256.Sum256([]byte(target))
 	revisionHash := sha256.Sum256(raw.Value.Body)
-	key := "alerts-enriched:" + hex.EncodeToString(scopeHash[:])
+	key := "alerts-enriched:" + s.privateScopeKey(target)
 	revision := hex.EncodeToString(revisionHash[:])
 	result, err := s.fetcher.DeriveVersioned(ctx, key, revision, s.config.AlertTTL, "application/geo+json", func(buildCtx context.Context) (upstream.Result, error) {
 		body, err := s.enrichAlerts(buildCtx, raw.Value.Body)
@@ -469,8 +560,9 @@ func (s *Server) alertsURL(query url.Values) (string, error) {
 	}
 	upstreamQuery := url.Values{"status": {"actual"}}
 	scopes := 0
-	if point := strings.TrimSpace(query.Get("point")); point != "" {
-		if !validPoint(point) {
+	if rawPoint := strings.TrimSpace(query.Get("point")); rawPoint != "" {
+		point, ok := normalizedPoint(rawPoint)
+		if !ok {
 			return "", errors.New("point must be latitude,longitude within valid ranges")
 		}
 		upstreamQuery.Set("point", point)
@@ -497,14 +589,20 @@ func (s *Server) alertsURL(query url.Values) (string, error) {
 	return target.String(), nil
 }
 
-func validPoint(raw string) bool {
+func normalizedPoint(raw string) (string, bool) {
 	parts := strings.Split(raw, ",")
 	if len(parts) != 2 {
-		return false
+		return "", false
 	}
 	lat, errLat := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
 	lon, errLon := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-	return errLat == nil && errLon == nil && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180
+	if errLat != nil || errLon != nil ||
+		math.IsNaN(lat) || math.IsInf(lat, 0) ||
+		math.IsNaN(lon) || math.IsInf(lon, 0) ||
+		lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+		return "", false
+	}
+	return fmt.Sprintf("%.3f,%.3f", math.Round(lat*1000)/1000, math.Round(lon*1000)/1000), true
 }
 
 func lettersOnly(raw string) bool {
@@ -527,9 +625,18 @@ type featureCollection struct {
 }
 
 func normalizeStations(body []byte, reflectivityElevations, velocityElevations []string) ([]byte, error) {
+	if err := radar.ValidateStationCatalog(body); err != nil {
+		return nil, err
+	}
 	var input featureCollection
 	if err := json.Unmarshal(body, &input); err != nil {
 		return nil, fmt.Errorf("decode stations: %w", err)
+	}
+	if input.Type != "FeatureCollection" {
+		return nil, errors.New("decode stations: expected a GeoJSON FeatureCollection")
+	}
+	if len(input.Features) == 0 {
+		return nil, errors.New("decode stations: station collection is empty")
 	}
 	output := featureCollection{Type: "FeatureCollection", Features: make([]map[string]any, 0, len(input.Features))}
 	seen := make(map[string]bool)
@@ -541,7 +648,7 @@ func normalizeStations(body []byte, reflectivityElevations, velocityElevations [
 			continue
 		}
 		geometry, ok := feature["geometry"].(map[string]any)
-		if !ok {
+		if !ok || !validStationPoint(geometry) {
 			continue
 		}
 		seen[id] = true
@@ -567,7 +674,26 @@ func normalizeStations(body []byte, reflectivityElevations, velocityElevations [
 			},
 		})
 	}
+	if len(output.Features) == 0 {
+		return nil, errors.New("decode stations: no valid WSR-88D stations")
+	}
 	return json.Marshal(output)
+}
+
+func validStationPoint(geometry map[string]any) bool {
+	if geometry["type"] != "Point" {
+		return false
+	}
+	coordinates, ok := geometry["coordinates"].([]any)
+	if !ok || len(coordinates) < 2 {
+		return false
+	}
+	lon, lonOK := coordinates[0].(float64)
+	lat, latOK := coordinates[1].(float64)
+	return lonOK && latOK &&
+		!math.IsNaN(lon) && !math.IsInf(lon, 0) &&
+		!math.IsNaN(lat) && !math.IsInf(lat, 0) &&
+		lon >= -180 && lon <= 180 && lat >= -90 && lat <= 90
 }
 
 func unionStrings(first, second []string) []string {
@@ -588,19 +714,35 @@ func supportedWSR88D(id string) bool {
 	return len(id) == 4 && (id[0] == 'K' || id[0] == 'P' || id == "TJUA")
 }
 
-func decorateAlerts(body []byte) ([]byte, error) {
+func decodeAlerts(body []byte) (featureCollection, error) {
 	var collection featureCollection
 	if err := json.Unmarshal(body, &collection); err != nil {
-		return nil, fmt.Errorf("decode alerts: %w", err)
+		return featureCollection{}, fmt.Errorf("decode alerts: %w", err)
 	}
 	if collection.Type != "FeatureCollection" {
-		return nil, errors.New("decode alerts: expected a GeoJSON FeatureCollection")
+		return featureCollection{}, errors.New("decode alerts: expected a GeoJSON FeatureCollection")
+	}
+	if collection.Features == nil {
+		return featureCollection{}, errors.New("decode alerts: features must be an array")
 	}
 	for _, feature := range collection.Features {
-		properties, ok := feature["properties"].(map[string]any)
-		if !ok {
-			return nil, errors.New("decode alerts: feature properties must be an object")
+		if feature["type"] != "Feature" {
+			return featureCollection{}, errors.New("decode alerts: collection entries must be GeoJSON features")
 		}
+		if _, ok := feature["properties"].(map[string]any); !ok {
+			return featureCollection{}, errors.New("decode alerts: feature properties must be an object")
+		}
+	}
+	return collection, nil
+}
+
+func decorateAlerts(body []byte) ([]byte, error) {
+	collection, err := decodeAlerts(body)
+	if err != nil {
+		return nil, err
+	}
+	for _, feature := range collection.Features {
+		properties := feature["properties"].(map[string]any)
 		event, _ := properties["event"].(string)
 		severity, _ := properties["severity"].(string)
 		category, color := classifyAlert(event, severity)
@@ -659,7 +801,8 @@ func writeCached(w http.ResponseWriter, r *http.Request, status int, body []byte
 	if result.Value.LastModified != "" {
 		w.Header().Set("Last-Modified", result.Value.LastModified)
 	}
-	if matchesIfNoneMatch(r.Header.Get("If-None-Match"), etag) {
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		matchesIfNoneMatch(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -782,8 +925,8 @@ func (s *Server) headers(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, If-None-Match, Last-Event-ID")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, If-None-Match, Last-Event-ID")
 		w.Header().Set("Access-Control-Expose-Headers", "ETag, Last-Modified, X-Data-Fetched-At, X-Data-Checked-At, X-Radar-Cache")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

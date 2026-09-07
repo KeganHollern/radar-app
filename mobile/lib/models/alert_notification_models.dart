@@ -40,6 +40,8 @@ const alertNotificationTypeCatalog = <String>[
   'Special Weather Statement',
 ];
 
+const currentBackgroundLocationDisclosureVersion = 1;
+
 const defaultAlertNotificationTypes = <String>{
   'tornado warning',
   'extreme wind warning',
@@ -67,6 +69,7 @@ final class AlertNotificationPreferences {
     required Iterable<String> enabledTypes,
     this.scope = AlertNotificationScope.nearby,
     this.onboardingCompleted = false,
+    this.backgroundLocationDisclosureVersion = 0,
     this.monitoringEnabled = false,
     this.baselineGeneration = 0,
     Map<String, int> typeGenerations = const {},
@@ -103,6 +106,10 @@ final class AlertNotificationPreferences {
       enabledTypes: enabledTypes,
       scope: AlertNotificationScope.fromStorage(json['scope']?.toString()),
       onboardingCompleted: json['onboardingCompleted'] == true,
+      backgroundLocationDisclosureVersion:
+          json['backgroundLocationDisclosureVersion'] is int
+          ? json['backgroundLocationDisclosureVersion'] as int
+          : 0,
       monitoringEnabled: json['monitoringEnabled'] == true,
       baselineGeneration: json['baselineGeneration'] is int
           ? json['baselineGeneration'] as int
@@ -114,6 +121,7 @@ final class AlertNotificationPreferences {
   final Set<String> enabledTypes;
   final AlertNotificationScope scope;
   final bool onboardingCompleted;
+  final int backgroundLocationDisclosureVersion;
   final bool monitoringEnabled;
   final int baselineGeneration;
   final Map<String, int> typeGenerations;
@@ -128,6 +136,7 @@ final class AlertNotificationPreferences {
     Iterable<String>? enabledTypes,
     AlertNotificationScope? scope,
     bool? onboardingCompleted,
+    int? backgroundLocationDisclosureVersion,
     bool? monitoringEnabled,
     int? baselineGeneration,
     Map<String, int>? typeGenerations,
@@ -135,6 +144,9 @@ final class AlertNotificationPreferences {
     enabledTypes: enabledTypes ?? this.enabledTypes,
     scope: scope ?? this.scope,
     onboardingCompleted: onboardingCompleted ?? this.onboardingCompleted,
+    backgroundLocationDisclosureVersion:
+        backgroundLocationDisclosureVersion ??
+        this.backgroundLocationDisclosureVersion,
     monitoringEnabled: monitoringEnabled ?? this.monitoringEnabled,
     baselineGeneration: baselineGeneration ?? this.baselineGeneration,
     typeGenerations: typeGenerations ?? this.typeGenerations,
@@ -146,6 +158,8 @@ final class AlertNotificationPreferences {
       'enabledTypes': types,
       'scope': scope.storageValue,
       'onboardingCompleted': onboardingCompleted,
+      'backgroundLocationDisclosureVersion':
+          backgroundLocationDisclosureVersion,
       'monitoringEnabled': monitoringEnabled,
       'baselineGeneration': baselineGeneration,
       'typeGenerations': typeGenerations,

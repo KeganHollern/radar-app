@@ -39,7 +39,7 @@ jobs:
           cache-dependency-path: backend/go.mod
       - name: Test API
         working-directory: backend
-        run: go test ./...
+        run: go test -race ./...
 
   image:
     needs: test

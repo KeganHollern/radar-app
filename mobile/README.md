@@ -87,33 +87,66 @@ flutter analyze
 flutter test
 ```
 
+## Check Android notifications
+
+Background notifications use periodic Android work, with a minimum interval of
+15 minutes. Android can delay a check further while idle or saving battery.
+They do not use a server push service.
+
+In Settings, open **Background notifications** and use **Send test notification**.
+This checks the Android notification permission, Weather alerts channel, and
+release icon without requiring an active weather alert or a background job.
+If the channel is blocked, enable **Weather alerts** in Android's notification
+settings for HyprRadar.
+
+For real alerts, also enable monitoring and select the desired event types.
+**Near me** requires the location disclosure and **Allow all the time** location
+permission. The backend must serve `POST /api/v1/alerts/nearby`; a 404 means the
+server needs the matching update. **Nationwide** uses its first successful check
+to record existing alerts and only notifies for new alerts on later checks.
+Validate real delivery on a device after installing the new APK and updating
+the backend. A successful test notification does not verify background location
+or Android's job scheduling.
+
 ## Android releases and signing
 
-Release builds never fall back to the Android debug certificate. To produce a
-signed APK locally, copy the example and point it at the upload keystore:
+Release builds never fall back to the Android debug certificate. For a local
+one-key build, copy the example and point it at the permanent key (or at the
+Play upload key when building only the AAB):
 
 ```sh
 cp android/key.properties.example android/key.properties
 flutter build apk --release
+flutter build appbundle --release
 ```
 
-Fill in all four values in `android/key.properties`. That file and all
-`*.jks`/`*.keystore` files are ignored by Git; inject them from repository
-secrets in CI rather than committing credentials. Without `key.properties`,
+The Play artifact is `build/app/outputs/bundle/release/app-release.aab`.
+Fill in all four values in `android/key.properties`. That file and common
+keystore containers (`*.jks`, `*.keystore`, `*.p12`, and `*.pfx`) are ignored by
+Git; inject them from repository secrets in CI rather than committing credentials. Without `key.properties`,
 release output is intentionally unsigned while debug builds remain unchanged.
 
 Publishing a GitHub Release automatically builds HyprRadar's signed universal
-Android APK and attaches it with a SHA-256 checksum. The release tag must be
+Android APK and signed Play App Bundle and attaches both with SHA-256 checksums.
+The release tag must be
 `v<version>`, where `<version>` exactly matches the version name before `+` in
 `pubspec.yaml` (for example, `version: 1.0.1+11` uses tag `v1.0.1`). A manual run
-of the **Android release** workflow performs the same build and validation but
+of the **Android release** workflow performs the same builds and validation but
 only creates a temporary Actions artifact; it never publishes to a GitHub
-Release.
+Release or uploads anything to Google Play.
 
-The workflow requires the `ANDROID_KEYSTORE_BASE64`,
+The workflow always uses `ANDROID_KEYSTORE_BASE64`,
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`
-repository secrets. Keep a secure backup of the same permanent signing key:
-Android will reject future HyprRadar updates signed with a different key.
+for the GitHub APK. Keep a secure backup of that permanent app-signing key:
+Android rejects in-place updates signed with a different key.
+
+After Play App Signing supplies or accepts a separate upload key, configure all
+four optional `PLAY_UPLOAD_KEYSTORE_BASE64`, `PLAY_UPLOAD_KEYSTORE_PASSWORD`,
+`PLAY_UPLOAD_KEY_ALIAS`, and `PLAY_UPLOAD_KEY_PASSWORD` secrets plus the public
+`PLAY_UPLOAD_CERT_SHA256` repository variable. The workflow then signs only the
+AAB with that upload key and verifies each artifact against its own certificate.
+If none of those five values is configured, the AAB intentionally uses the
+permanent key for initial enrollment or same-key operation. Partial setup fails.
 
 The permanent release certificate SHA-256 fingerprint is:
 `F8:1C:8C:60:14:56:4E:B9:BE:08:66:FE:E6:0C:1F:7F:66:9A:29:A3:43:8A:C8:58:7A:EC:0B:D0:0F:E1:9F:1D`.

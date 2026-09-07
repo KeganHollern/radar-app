@@ -48,6 +48,11 @@ final class AlertNotificationWorker {
     if (!preferences.monitoringEnabled || preferences.enabledTypes.isEmpty) {
       return AlertNotificationRunResult.success;
     }
+    if (preferences.scope == AlertNotificationScope.nearby &&
+        preferences.backgroundLocationDisclosureVersion <
+            currentBackgroundLocationDisclosureVersion) {
+      return AlertNotificationRunResult.success;
+    }
 
     final permission = await _permissions.status();
     if (!permission.supported || !permission.notificationsGranted) {
@@ -147,6 +152,13 @@ final class AlertNotificationWorker {
       }
 
       try {
+        // Android cancellation does not necessarily stop an HTTP request or a
+        // Dart isolate already running. Honor settings changed during the check
+        // before displaying or acknowledging alerts from its old scope.
+        final currentPreferences = await _store.loadPreferences();
+        if (currentPreferences.toJson() != preferences.toJson()) {
+          return AlertNotificationRunResult.success;
+        }
         await _notifier.show(alert);
       } catch (_) {
         await _store.saveLedger(

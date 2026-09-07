@@ -21,9 +21,10 @@ APK on an Android device and allow installation from that source when prompted.
 - `deploy/radar-api.yaml` — Kubernetes resources for `radar.lystic.dev`
 - `docs/architecture.md` — data-source decisions, freshness model, safety notes,
   and the Level-II elevation roadmap
+- `docs/google-play-release.md` — the audited Google Play publishing checklist
 - `.github/workflows/api-image.yml` — Go tests and GHCR image publishing
 - `.github/workflows/mobile.yml` — Flutter analysis and tests
-- `.github/workflows/android-release.yml` — signed APK release publishing
+- `.github/workflows/android-release.yml` — signed APK and Play App Bundle publishing
 
 ## What works
 
@@ -78,6 +79,7 @@ Useful endpoints:
 - `GET /api/v1/config`
 - `GET /api/v1/stations`
 - `GET /api/v1/alerts`
+- `POST /api/v1/alerts/nearby` with a rounded JSON `latitude`/`longitude` body
 - `GET /api/v1/radar/latest?product=aggregate`
 - `GET /api/v1/radar/latest?product=aggregate&station=KEWX`
 - `GET /api/v1/radar/latest?product=velocity&station=KDMX&elevation=0.5`

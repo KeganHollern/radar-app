@@ -123,16 +123,10 @@ final class HttpAlertNotificationApi implements AlertNotificationApi {
         'A location is required for nearby alerts.',
       );
     }
-    final query = <String, String>{};
-    if (scope == AlertNotificationScope.nearby) {
-      query['point'] = [
-        point!.latitude.toStringAsFixed(3),
-        point.longitude.toStringAsFixed(3),
-      ].join(',');
-    }
+    final nearby = scope == AlertNotificationScope.nearby;
     final uri = Uri.parse(
-      '$baseUrl/api/v1/alerts',
-    ).replace(queryParameters: query.isEmpty ? null : query);
+      nearby ? '$baseUrl/api/v1/alerts/nearby' : '$baseUrl/api/v1/alerts',
+    );
     final headers = <String, String>{'Accept': 'application/geo+json'};
     final stateStore = _requestStateStore;
     var sentConditionalValidator = false;
@@ -148,9 +142,23 @@ final class HttpAlertNotificationApi implements AlertNotificationApi {
 
     http.Response response;
     try {
-      response = await _client
-          .get(uri, headers: headers)
-          .timeout(const Duration(seconds: 20));
+      if (nearby) {
+        headers['Content-Type'] = 'application/json';
+        response = await _client
+            .post(
+              uri,
+              headers: headers,
+              body: jsonEncode({
+                'latitude': double.parse(point!.latitude.toStringAsFixed(3)),
+                'longitude': double.parse(point.longitude.toStringAsFixed(3)),
+              }),
+            )
+            .timeout(const Duration(seconds: 20));
+      } else {
+        response = await _client
+            .get(uri, headers: headers)
+            .timeout(const Duration(seconds: 20));
+      }
     } catch (error) {
       throw AlertNotificationApiException(
         'Unable to check weather alerts: $error',
@@ -167,6 +175,12 @@ final class HttpAlertNotificationApi implements AlertNotificationApi {
       return const AlertNotificationFetchResult.notModified();
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      if (nearby && response.statusCode == 404) {
+        throw const AlertNotificationApiException(
+          'Nearby alerts require an updated weather service. The server has not deployed this endpoint yet.',
+          transient: true,
+        );
+      }
       throw AlertNotificationApiException(
         'Weather alert service returned ${response.statusCode}.',
         transient: response.statusCode == 429 || response.statusCode >= 500,

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../controllers/alert_notification_controller.dart';
 import '../models/alert_notification_models.dart';
 import '../models/alert_type_category.dart';
+import '../services/alert_notification_permissions.dart';
 import '../theme/flexoki_theme.dart';
 import 'alert_type_picker.dart';
 
@@ -18,6 +19,7 @@ String alertNotificationSettingsSummary(
   final count = preferences.enabledTypes.length;
   final selected = '$count ${count == 1 ? 'type' : 'types'} selected';
   if (!preferences.monitoringEnabled) return 'Off · $selected';
+  if (!controller.backgroundWorkActive) return 'Paused · $selected';
   return 'On · ${preferences.scope.label} · $selected';
 }
 
@@ -36,6 +38,53 @@ class AlertNotificationSettingsPage extends StatelessWidget {
   final ScrollController? scrollController;
   final VoidCallback onBack;
   final ValueChanged<AlertTypeCategory> onCategorySelected;
+
+  Future<bool> _requestBackgroundLocation(BuildContext context) async {
+    final continueToPermission = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        scrollable: true,
+        title: const Text('Allow background location?'),
+        content: const Text(backgroundLocationDisclosureText),
+        actions: [
+          TextButton(
+            key: const ValueKey('background-location-disclosure-cancel'),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            key: const ValueKey('background-location-disclosure-continue'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (continueToPermission != true || !context.mounted) return false;
+    await controller.enableBackgroundLocation();
+    return controller.backgroundLocationDisclosureAccepted;
+  }
+
+  Future<void> _setMonitoring(BuildContext context, bool enabled) async {
+    if (enabled &&
+        controller.preferences.scope == AlertNotificationScope.nearby &&
+        !controller.backgroundLocationDisclosureAccepted) {
+      if (!await _requestBackgroundLocation(context)) return;
+    }
+    await controller.setMonitoringEnabled(enabled);
+  }
+
+  Future<void> _setScope(
+    BuildContext context,
+    AlertNotificationScope scope,
+  ) async {
+    if (scope == AlertNotificationScope.nearby &&
+        !controller.backgroundLocationDisclosureAccepted) {
+      if (!await _requestBackgroundLocation(context)) return;
+    }
+    await controller.setScope(scope);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -90,9 +139,8 @@ class AlertNotificationSettingsPage extends StatelessWidget {
                         key: const ValueKey('alert-notification-master'),
                         value: preferences.monitoringEnabled,
                         onChanged: controlsEnabled
-                            ? (enabled) => unawaited(
-                                controller.setMonitoringEnabled(enabled),
-                              )
+                            ? (enabled) =>
+                                  unawaited(_setMonitoring(context, enabled))
                             : null,
                         title: const Text(
                           'Background notifications',
@@ -125,6 +173,19 @@ class AlertNotificationSettingsPage extends StatelessWidget {
                           ? null
                           : () => unawaited(controller.enableNotifications()),
                     )
+                  else if (preferences.scope == AlertNotificationScope.nearby &&
+                      !controller.backgroundLocationDisclosureAccepted)
+                    _PermissionCard(
+                      icon: Icons.privacy_tip_outlined,
+                      title: 'Review Near me location use',
+                      body:
+                          'Review how Near me uses location before background checks can run.',
+                      actionLabel: controller.busy ? 'Opening…' : 'Review',
+                      onAction: controller.busy
+                          ? null
+                          : () =>
+                                unawaited(_requestBackgroundLocation(context)),
+                    )
                   else if (!permission.backgroundLocationGranted)
                     _PermissionCard(
                       icon: Icons.location_off_outlined,
@@ -139,9 +200,8 @@ class AlertNotificationSettingsPage extends StatelessWidget {
                           : 'Enable background location',
                       onAction: controller.busy
                           ? null
-                          : () => unawaited(
-                              controller.enableBackgroundLocation(),
-                            ),
+                          : () =>
+                                unawaited(_requestBackgroundLocation(context)),
                     ),
                   if (permission.supported) ...[
                     const SizedBox(height: 16),
@@ -169,7 +229,7 @@ class AlertNotificationSettingsPage extends StatelessWidget {
                       onSelectionChanged: controlsEnabled
                           ? (selection) {
                               if (selection.isNotEmpty) {
-                                unawaited(controller.setScope(selection.first));
+                                unawaited(_setScope(context, selection.first));
                               }
                             }
                           : null,
@@ -200,6 +260,22 @@ class AlertNotificationSettingsPage extends StatelessWidget {
                         color: Flexoki.base500,
                         fontSize: 12,
                       ),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      key: const ValueKey('send-test-alert-notification'),
+                      onPressed: controlsEnabled
+                          ? () async {
+                              final message = await controller
+                                  .sendTestNotification();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(
+                                context,
+                              ).showSnackBar(SnackBar(content: Text(message)));
+                            }
+                          : null,
+                      icon: const Icon(Icons.notifications_active_outlined),
+                      label: const Text('Send test notification'),
                     ),
                   ],
                 ],

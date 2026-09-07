@@ -57,15 +57,38 @@ func (f *Fetcher) Cached(key string) (Result, bool) {
 	return Result{Value: value, State: state}, true
 }
 
+// PurgeExpired removes values after their stale-use windows. Servers should
+// call this periodically so one-off request keys have a real retention bound.
+func (f *Fetcher) PurgeExpired(now time.Time) int {
+	return f.cache.PurgeExpired(now)
+}
+
 func (f *Fetcher) Get(ctx context.Context, key, target, accept string, ttl time.Duration, contentTypePrefixes ...string) (Result, error) {
-	return f.get(ctx, key, target, accept, ttl, false, contentTypePrefixes)
+	return f.get(ctx, key, target, accept, ttl, false, nil, contentTypePrefixes)
+}
+
+// GetValidated admits a new upstream body to the cache only after validate
+// accepts its application-level structure. A failed validation can therefore
+// fall back to a previously validated stale value instead of poisoning a
+// long-lived cache entry with a syntactically valid error response.
+func (f *Fetcher) GetValidated(
+	ctx context.Context,
+	key, target, accept string,
+	ttl time.Duration,
+	validate func([]byte) error,
+	contentTypePrefixes ...string,
+) (Result, error) {
+	if validate == nil {
+		return Result{}, errors.New("upstream body validator is required")
+	}
+	return f.get(ctx, key, target, accept, ttl, false, validate, contentTypePrefixes)
 }
 
 // Refresh performs one conditional upstream recheck even when key is still
 // fresh in the local cache. Forced refreshes coalesce separately from ordinary
 // reads and update the same cached value.
 func (f *Fetcher) Refresh(ctx context.Context, key, target, accept string, ttl time.Duration, contentTypePrefixes ...string) (Result, error) {
-	return f.get(ctx, key, target, accept, ttl, true, contentTypePrefixes)
+	return f.get(ctx, key, target, accept, ttl, true, nil, contentTypePrefixes)
 }
 
 // Derive caches and coalesces a response computed from other fetched values.
@@ -277,10 +300,22 @@ func (f *Fetcher) derive(ctx context.Context, key string, ttl time.Duration, con
 	return result, nil
 }
 
-func (f *Fetcher) get(ctx context.Context, key, target, accept string, ttl time.Duration, force bool, contentTypePrefixes []string) (Result, error) {
+func (f *Fetcher) get(
+	ctx context.Context,
+	key, target, accept string,
+	ttl time.Duration,
+	force bool,
+	validate func([]byte) error,
+	contentTypePrefixes []string,
+) (Result, error) {
 	now := time.Now().UTC()
 	if value, state, ok := f.cache.Get(key, now); !force && ok && state == cache.Hit {
-		return Result{Value: value, State: cache.Hit}, nil
+		if validate == nil || validate(value.Body) == nil {
+			return Result{Value: value, State: cache.Hit}, nil
+		}
+		// A value admitted by an older or unvalidated caller must never bypass
+		// this request's application-level validator.
+		f.cache.Delete(key)
 	}
 
 	inflightKey := key
@@ -294,6 +329,12 @@ func (f *Fetcher) get(ctx context.Context, key, target, accept string, ttl time.
 		case <-ctx.Done():
 			return Result{}, ctx.Err()
 		case <-current.done:
+			if current.err == nil && validate != nil {
+				if err := validate(current.result.Value.Body); err != nil {
+					f.cache.Delete(key)
+					return Result{}, fmt.Errorf("validate shared upstream response: %w", err)
+				}
+			}
 			return current.result, current.err
 		}
 	}
@@ -301,7 +342,7 @@ func (f *Fetcher) get(ctx context.Context, key, target, accept string, ttl time.
 	f.inflight[inflightKey] = current
 	f.mu.Unlock()
 
-	current.result, current.err = f.fetch(ctx, key, target, accept, ttl, force, contentTypePrefixes)
+	current.result, current.err = f.fetch(ctx, key, target, accept, ttl, force, validate, contentTypePrefixes)
 	close(current.done)
 	f.mu.Lock()
 	delete(f.inflight, inflightKey)
@@ -309,9 +350,24 @@ func (f *Fetcher) get(ctx context.Context, key, target, accept string, ttl time.
 	return current.result, current.err
 }
 
-func (f *Fetcher) fetch(ctx context.Context, key, target, accept string, ttl time.Duration, force bool, contentTypePrefixes []string) (Result, error) {
+func (f *Fetcher) fetch(
+	ctx context.Context,
+	key, target, accept string,
+	ttl time.Duration,
+	force bool,
+	validate func([]byte) error,
+	contentTypePrefixes []string,
+) (Result, error) {
 	now := time.Now().UTC()
 	staleValue, staleState, hasStale := f.cache.Get(key, now)
+	if validate != nil && hasStale {
+		if err := validate(staleValue.Body); err != nil {
+			f.cache.Delete(key)
+			staleValue = cache.Value{}
+			staleState = cache.Miss
+			hasStale = false
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -375,6 +431,14 @@ func (f *Fetcher) fetch(ctx context.Context, key, target, accept string, ttl tim
 			return Result{Value: staleValue, State: cache.Stale}, nil
 		}
 		return Result{}, errors.New("upstream response exceeds configured limit")
+	}
+	if validate != nil {
+		if err := validate(body); err != nil {
+			if hasStale && staleState == cache.Stale {
+				return Result{Value: staleValue, State: cache.Stale}, nil
+			}
+			return Result{}, fmt.Errorf("validate upstream response: %w", err)
+		}
 	}
 	value := cache.Value{
 		Body:         body,

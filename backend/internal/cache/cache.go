@@ -87,6 +87,32 @@ func (c *Cache) Put(key string, value Value) {
 	}
 }
 
+// Delete removes one entry regardless of its freshness.
+func (c *Cache) Delete(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if element, ok := c.items[key]; ok {
+		c.remove(element)
+	}
+}
+
+// PurgeExpired actively removes values whose stale-use window has ended.
+// This bounds retention even when a one-off key is never requested again.
+func (c *Cache) PurgeExpired(now time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	removed := 0
+	for element := c.lru.Back(); element != nil; {
+		previous := element.Prev()
+		if !now.Before(element.Value.(*item).value.StaleUntil) {
+			c.remove(element)
+			removed++
+		}
+		element = previous
+	}
+	return removed
+}
+
 func (c *Cache) remove(element *list.Element) {
 	if element == nil {
 		return

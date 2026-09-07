@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
 import '../models/lightning_models.dart';
+import 'http_event_stream.dart';
 
 final class LightningApiException implements Exception {
   const LightningApiException(this.message, {this.statusCode});
@@ -66,66 +68,79 @@ final class LightningApi implements LightningDataSource {
   Stream<LightningUpdate> watchUpdates({
     LightningBounds? bounds,
     String? lastEventId,
-  }) async* {
-    final request = http.Request(
-      'GET',
-      _uri('/api/v1/lightning/updates', bounds),
-    );
-    request.headers.addAll(const {
+  }) {
+    final headers = {
       'Accept': 'text/event-stream',
       'Cache-Control': 'no-cache',
-    });
+    };
     if (lastEventId != null && lastEventId.trim().isNotEmpty) {
-      request.headers['Last-Event-ID'] = lastEventId;
+      headers['Last-Event-ID'] = lastEventId;
     }
-    final response = await _client.send(request).timeout(_requestTimeout);
-    final responseBody = response.stream.timeout(
-      _streamIdleTimeout,
-      onTimeout: (sink) {
-        sink.addError(
-          const LightningApiException(
-            'Lightning stream stopped responding; reconnecting',
-          ),
+    return openHttpEventStream<LightningUpdate>(
+      client: _client,
+      uri: _uri('/api/v1/lightning/updates', bounds),
+      headers: headers,
+      requestTimeout: _requestTimeout,
+      parse: (response) {
+        final responseBody = response.stream.timeout(
+          _streamIdleTimeout,
+          onTimeout: (sink) {
+            sink.addError(
+              const LightningApiException(
+                'Lightning stream stopped responding; reconnecting',
+              ),
+            );
+            sink.close();
+          },
         );
-        sink.close();
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          return responseBody
+              .transform(utf8.decoder)
+              .join()
+              .asStream()
+              .map<LightningUpdate>((body) {
+                _checkResponse(response.statusCode, body);
+                throw StateError('Expected a failed lightning response');
+              });
+        }
+
+        var eventName = 'message';
+        String? eventId;
+        final data = StringBuffer();
+        return responseBody
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .transform(
+              StreamTransformer<String, LightningUpdate>.fromHandlers(
+                handleData: (line, sink) {
+                  if (line.isEmpty) {
+                    if (data.isNotEmpty) {
+                      final update = _parseSseEvent(
+                        eventName: eventName,
+                        eventId: eventId,
+                        data: data.toString(),
+                      );
+                      if (update != null) sink.add(update);
+                    }
+                    eventName = 'message';
+                    eventId = null;
+                    data.clear();
+                    return;
+                  }
+                  if (line.startsWith(':')) return;
+                  if (line.startsWith('event:')) {
+                    eventName = line.substring(6).trim();
+                  } else if (line.startsWith('id:')) {
+                    eventId = line.substring(3).trim();
+                  } else if (line.startsWith('data:')) {
+                    if (data.isNotEmpty) data.write('\n');
+                    data.write(line.substring(5).trimLeft());
+                  }
+                },
+              ),
+            );
       },
     );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final body = await utf8.decoder.bind(responseBody).join();
-      _checkResponse(response.statusCode, body);
-    }
-
-    var eventName = 'message';
-    String? eventId;
-    final data = StringBuffer();
-    await for (final line
-        in responseBody
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())) {
-      if (line.isEmpty) {
-        if (data.isNotEmpty) {
-          final update = _parseSseEvent(
-            eventName: eventName,
-            eventId: eventId,
-            data: data.toString(),
-          );
-          if (update != null) yield update;
-        }
-        eventName = 'message';
-        eventId = null;
-        data.clear();
-        continue;
-      }
-      if (line.startsWith(':')) continue;
-      if (line.startsWith('event:')) {
-        eventName = line.substring(6).trim();
-      } else if (line.startsWith('id:')) {
-        eventId = line.substring(3).trim();
-      } else if (line.startsWith('data:')) {
-        if (data.isNotEmpty) data.write('\n');
-        data.write(line.substring(5).trimLeft());
-      }
-    }
   }
 
   LightningUpdate? _parseSseEvent({

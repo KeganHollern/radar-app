@@ -17,11 +17,13 @@ to `https://radar.lystic.dev`.
 ## Client API
 
 - `GET /` — self-contained HyprRadar marketing page (no upstream dependency)
+- `GET /privacy` — public HyprRadar privacy policy
 - `GET /healthz` — process liveness
 - `GET /readyz` — process readiness (NOAA outages do not trigger restart loops)
 - `GET /api/v1/config` — product, refresh, elevation, color, and URL manifest
 - `GET /api/v1/stations` — normalized WSR-88D station GeoJSON
 - `GET /api/v1/alerts[?point=lat,lon|area=TX|region=AL]` — active NWS alert GeoJSON
+- `POST /api/v1/alerts/nearby` — active alerts for rounded JSON `latitude` and `longitude`, kept out of request URLs
 - `GET /api/v1/radar/latest?product=aggregate` — current observation manifest
 - `GET /api/v1/radar/latest?product=aggregate&station=KEWX` — the same regional mosaic with one viewport-pinned high-detail radar
 - `GET /api/v1/radar/latest?product=reflectivity&station=KFWS&elevation=0.5`

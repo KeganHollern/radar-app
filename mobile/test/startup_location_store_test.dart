@@ -24,7 +24,7 @@ void main() {
     await store.save(saved);
     final loaded = await store.load();
 
-    expect(loaded?.position, saved.position);
+    expect(loaded?.position, const LatLng(30.267, -97.743));
     expect(loaded?.observedAt, saved.observedAt);
   });
 
@@ -74,6 +74,12 @@ void main() {
             .millisecondsSinceEpoch,
       }),
       isNull,
+    );
+    expect(
+      (await SharedPreferences.getInstance()).containsKey(
+        'map.startup_location.v1',
+      ),
+      isFalse,
     );
     expect(
       await load({

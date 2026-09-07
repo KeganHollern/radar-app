@@ -172,6 +172,9 @@ metadata:
   name: radar-api
   namespace: default
   annotations:
+    # Nearby locations used by older clients can appear in GET query strings.
+    # The API keeps path-only application logs, so disable raw ingress URLs.
+    nginx.ingress.kubernetes.io/enable-access-log: "false"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"

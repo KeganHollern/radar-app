@@ -31,18 +31,50 @@ final class LocalWeatherAlertNotifier implements WeatherAlertNotifier {
         ),
       ),
     );
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.createNotificationChannel(
+          const AndroidNotificationChannel(
+            channelId,
+            channelName,
+            description: 'Selected live National Weather Service alert types.',
+            importance: Importance.high,
+          ),
+        );
     _initialized = true;
   }
 
   @override
-  Future<void> show(WeatherAlert alert) async {
+  Future<void> show(WeatherAlert alert) => _show(
+    id: stableAlertNotificationId(alert.id),
+    title: alert.event,
+    body: _notificationBody(alert),
+    payload: alert.id,
+  );
+
+  Future<void> showTest() => _show(
+    id: stableAlertNotificationId('hyprradar.notification-test'),
+    title: 'HyprRadar test notification',
+    body:
+        'This is a test. Weather checks run separately in the background and depend on your alert settings.',
+    onlyAlertOnce: false,
+  );
+
+  Future<void> _show({
+    required int id,
+    required String title,
+    required String body,
+    String? payload,
+    bool onlyAlertOnce = true,
+  }) async {
     await initialize();
-    final body = _notificationBody(alert);
     await _plugin.show(
-      id: stableAlertNotificationId(alert.id),
-      title: alert.event,
+      id: id,
+      title: title,
       body: body,
-      payload: alert.id,
+      payload: payload,
       notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           channelId,
@@ -55,7 +87,7 @@ final class LocalWeatherAlertNotifier implements WeatherAlertNotifier {
           category: AndroidNotificationCategory.event,
           visibility: NotificationVisibility.public,
           groupKey: 'hyprradar.weather-alerts',
-          onlyAlertOnce: true,
+          onlyAlertOnce: onlyAlertOnce,
           styleInformation: BigTextStyleInformation(body),
         ),
         iOS: const DarwinNotificationDetails(

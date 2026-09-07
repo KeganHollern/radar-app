@@ -190,12 +190,16 @@ func (s *Server) cachedZone(request zoneRequest) (multiPolygon, bool) {
 }
 
 func (s *Server) fetchZone(ctx context.Context, request zoneRequest) (multiPolygon, error) {
-	result, err := s.fetcher.Get(
+	result, err := s.fetcher.GetValidated(
 		ctx,
 		"alert-zone:"+request.key,
 		request.target,
 		"application/geo+json,application/json",
 		s.config.AlertZoneTTL,
+		func(body []byte) error {
+			_, err := parseZone(request.key, body)
+			return err
+		},
 		"application/geo+json",
 		"application/json",
 	)

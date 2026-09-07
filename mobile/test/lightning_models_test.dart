@@ -101,6 +101,35 @@ void main() {
     expect(bounds.south, 11);
     expect(bounds.north, 59);
   });
+
+  test('viewport containment distinguishes the two arcs between endpoints', () {
+    final bounds = LightningBounds(west: 160, south: 10, east: -160, north: 60);
+
+    expect(
+      bounds.containsViewport(west: 170, south: 20, east: -170, north: 50),
+      isTrue,
+    );
+    expect(
+      bounds.containsViewport(west: -170, south: 20, east: 170, north: 50),
+      isFalse,
+    );
+    expect(
+      bounds.containsViewport(west: 165, south: 20, east: 175, north: 50),
+      isTrue,
+    );
+    expect(
+      bounds.containsViewport(west: -175, south: 20, east: -165, north: 50),
+      isTrue,
+    );
+    expect(
+      bounds.containsViewport(west: 150, south: 20, east: -170, north: 50),
+      isFalse,
+    );
+    expect(
+      bounds.containsViewport(west: 170, south: 0, east: -170, north: 50),
+      isFalse,
+    );
+  });
 }
 
 Map<String, dynamic> _feature(String? id) => {

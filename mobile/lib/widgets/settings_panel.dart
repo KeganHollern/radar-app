@@ -1,5 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../config/app_config.dart';
 import '../controllers/alert_notification_controller.dart';
 import '../models/alert_type_category.dart';
 import '../theme/flexoki_theme.dart';
@@ -105,6 +109,17 @@ class _RadarSettingsPanelState extends State<RadarSettingsPanel> {
     });
   }
 
+  Future<void> _openPrivacyPolicy() async {
+    try {
+      await launchUrl(
+        Uri.parse(AppConfig.privacyPolicyUrl),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (_) {
+      // The policy remains available at its stable URL if no browser can open.
+    }
+  }
+
   void _back() {
     switch (_page) {
       case _SettingsPage.mapAlertTypes:
@@ -188,6 +203,14 @@ class _RadarSettingsPanelState extends State<RadarSettingsPanel> {
                   ),
                 ),
               ],
+              const SizedBox(height: 10),
+              _SettingsDestinationTile(
+                key: const ValueKey('settings-destination-privacy'),
+                icon: Icons.privacy_tip_outlined,
+                title: 'Privacy policy',
+                summary: 'How HyprRadar handles location and app data',
+                onTap: () => unawaited(_openPrivacyPolicy()),
+              ),
             ],
           ),
         ),

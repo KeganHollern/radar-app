@@ -18,12 +18,46 @@ void main() {
         AlertNotificationPreferences(
           enabledTypes: const [],
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
       final permissions = _FakePermissions(_grantedPermissions);
       final location = _FakeLocation(_point(now));
       final api = _FakeApi(const []);
+      final notifier = _FakeNotifier();
+
+      final result = await _worker(
+        store: store,
+        permissions: permissions,
+        location: location,
+        api: api,
+        notifier: notifier,
+        now: now,
+      ).run();
+
+      expect(result, AlertNotificationRunResult.success);
+      expect(permissions.statusCalls, 0);
+      expect(location.calls, 0);
+      expect(api.calls, 0);
+      expect(notifier.alerts, isEmpty);
+    },
+  );
+
+  test(
+    'legacy nearby monitoring does no location or network work before redisclosure',
+    () async {
+      final store = _MemoryStore(
+        AlertNotificationPreferences(
+          enabledTypes: const ['Tornado Warning'],
+          onboardingCompleted: true,
+          monitoringEnabled: true,
+        ),
+      );
+      final permissions = _FakePermissions(_grantedPermissions);
+      final location = _FakeLocation(_point(now));
+      final api = _FakeApi([_alert('local', now: now)]);
       final notifier = _FakeNotifier();
 
       final result = await _worker(
@@ -51,6 +85,8 @@ void main() {
           enabledTypes: const ['Tornado Warning'],
           scope: AlertNotificationScope.nationwide,
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
@@ -93,6 +129,8 @@ void main() {
         AlertNotificationPreferences(
           enabledTypes: const ['Tornado Warning'],
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
@@ -126,6 +164,8 @@ void main() {
           enabledTypes: const ['Tornado Warning'],
           scope: AlertNotificationScope.nationwide,
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
@@ -160,6 +200,8 @@ void main() {
         enabledTypes: const ['Tornado Warning'],
         scope: AlertNotificationScope.nationwide,
         onboardingCompleted: true,
+        backgroundLocationDisclosureVersion:
+            currentBackgroundLocationDisclosureVersion,
         monitoringEnabled: true,
       ),
     );
@@ -191,6 +233,8 @@ void main() {
           enabledTypes: const ['Tornado Warning'],
           scope: AlertNotificationScope.nationwide,
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
           baselineGeneration: 1,
         ),
@@ -238,6 +282,8 @@ void main() {
                 enabledTypes: const ['Tornado Warning', 'Flash Flood Warning'],
                 scope: AlertNotificationScope.nationwide,
                 onboardingCompleted: true,
+                backgroundLocationDisclosureVersion:
+                    currentBackgroundLocationDisclosureVersion,
                 monitoringEnabled: true,
                 typeGenerations: const {'Flash Flood Warning': 1},
               ),
@@ -283,6 +329,8 @@ void main() {
         AlertNotificationPreferences(
           enabledTypes: const ['Tornado Warning'],
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
@@ -313,6 +361,8 @@ void main() {
       AlertNotificationPreferences(
         enabledTypes: const ['Tornado Warning'],
         onboardingCompleted: true,
+        backgroundLocationDisclosureVersion:
+            currentBackgroundLocationDisclosureVersion,
         monitoringEnabled: true,
       ),
     );
@@ -347,6 +397,8 @@ void main() {
         AlertNotificationPreferences(
           enabledTypes: const ['Tornado Warning'],
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
@@ -386,6 +438,43 @@ void main() {
     expect(location.calls, 0);
     expect(api.calls, 0);
   });
+
+  for (final change in ['disabled', 'scope changed', 'type removed']) {
+    test('a running check stops delivery when monitoring is $change', () async {
+      final store = _MemoryStore(
+        AlertNotificationPreferences(
+          enabledTypes: const ['Tornado Warning'],
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
+          monitoringEnabled: true,
+        ),
+      );
+      final notifier = _FakeNotifier();
+      final api = _FakeApi([_alert('late-response', now: now)])
+        ..onFetch = () {
+          store.preferences = switch (change) {
+            'disabled' => store.preferences.copyWith(monitoringEnabled: false),
+            'scope changed' => store.preferences.copyWith(
+              scope: AlertNotificationScope.nationwide,
+            ),
+            _ => store.preferences.copyWith(enabledTypes: []),
+          };
+        };
+      final result = await _worker(
+        store: store,
+        permissions: _FakePermissions(_grantedPermissions),
+        location: _FakeLocation(_point(now)),
+        api: api,
+        notifier: notifier,
+        now: now,
+      ).run();
+
+      expect(result, AlertNotificationRunResult.success);
+      expect(notifier.alerts, isEmpty);
+      expect(store.ledger.seenUntilEpochMs, isEmpty);
+      expect(api.acknowledgements, 0);
+    });
+  }
 }
 
 AlertNotificationWorker _worker({
@@ -522,6 +611,7 @@ final class _FakeApi implements AlertNotificationApi {
 
   List<WeatherAlert> alerts;
   Object? error;
+  void Function()? onFetch;
   int calls = 0;
   final List<AlertNotificationPoint?> points = [];
   final List<bool> bypassCacheValues = [];
@@ -537,6 +627,7 @@ final class _FakeApi implements AlertNotificationApi {
     points.add(point);
     bypassCacheValues.add(bypassCache);
     if (error case final failure?) throw failure;
+    onFetch?.call();
     return AlertNotificationFetchResult(alerts: alerts);
   }
 

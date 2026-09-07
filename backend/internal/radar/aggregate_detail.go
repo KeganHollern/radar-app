@@ -56,6 +56,7 @@ type aggregateDetailStation struct {
 }
 
 type radarStationCatalog struct {
+	Type     string `json:"type"`
 	Features []struct {
 		Geometry struct {
 			Type        string    `json:"type"`
@@ -65,6 +66,30 @@ type radarStationCatalog struct {
 			ID string `json:"rda_id"`
 		} `json:"properties"`
 	} `json:"features"`
+}
+
+// ValidateStationCatalog applies the same minimum schema check to every
+// consumer of the shared station cache key.
+func ValidateStationCatalog(body []byte) error {
+	var catalog radarStationCatalog
+	if err := json.Unmarshal(body, &catalog); err != nil {
+		return fmt.Errorf("decode radar stations: %w", err)
+	}
+	if catalog.Type != "FeatureCollection" {
+		return errors.New("decode radar stations: expected a GeoJSON FeatureCollection")
+	}
+	for _, feature := range catalog.Features {
+		id := strings.ToUpper(strings.TrimSpace(feature.Properties.ID))
+		if !supportedAggregateDetailStation(id) ||
+			feature.Geometry.Type != "Point" ||
+			len(feature.Geometry.Coordinates) < 2 {
+			continue
+		}
+		if validRadarCoordinate(feature.Geometry.Coordinates[1], feature.Geometry.Coordinates[0]) {
+			return nil
+		}
+	}
+	return errors.New("decode radar stations: no valid WSR-88D stations")
 }
 
 func (s *Service) aggregateTile(ctx context.Context, _ Selection, latest Latest, z, x, y int) (upstream.Result, error) {
@@ -277,12 +302,13 @@ func aggregateRegionalTileKey(regionName string, observedAt time.Time, z, x, y i
 }
 
 func (s *Service) resolveAggregateDetail(ctx context.Context, stationID string, components map[string]LatestComponent) (AggregateDetail, error) {
-	catalog, err := s.fetcher.Get(
+	catalog, err := s.fetcher.GetValidated(
 		ctx,
 		"stations",
 		s.config.StationsURL,
 		"application/geo+json,application/json",
 		s.config.StationTTL,
+		ValidateStationCatalog,
 		"application/geo+json",
 		"application/json",
 	)

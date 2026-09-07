@@ -3,3 +3,10 @@
 .vscode/
 backend/radar-api
 coverage/
+
+# Never track Android signing credentials.
+key.properties
+*.jks
+*.keystore
+*.p12
+*.pfx

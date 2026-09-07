@@ -46,6 +46,15 @@ jobs:
       - name: Test
         working-directory: mobile
         run: flutter test
-      - name: Build Android debug APK
+      - name: Build Android release APK
         working-directory: mobile
-        run: flutter build apk --debug
+        # No signing credentials are supplied in CI. Resource shrinking still
+        # runs, which catches notification icons removed only in release builds.
+        run: flutter build apk --release
+      - name: Check release notification resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n 1)"
+          "$build_tools/aapt" dump resources mobile/build/app/outputs/flutter-apk/app-release.apk > "$RUNNER_TEMP/apk-resources.txt"
+          grep -Fq "dev.lystic.radar:drawable/ic_stat_radar" "$RUNNER_TEMP/apk-resources.txt"

@@ -59,6 +59,27 @@ final class LightningBounds {
   final double east;
   final double north;
 
+  /// Checks the full eastward longitude interval, including dateline crossings.
+  /// Checking only the two endpoints can mistake a 340-degree viewport for a
+  /// narrow viewport inside an antimeridian subscription.
+  bool containsViewport({
+    required double west,
+    required double south,
+    required double east,
+    required double north,
+  }) {
+    if (![west, south, east, north].every((value) => value.isFinite) ||
+        south < this.south ||
+        north > this.north ||
+        south >= north) {
+      return false;
+    }
+    final offset = (west - this.west) % 360;
+    final span = _lightningLongitudeSpan(west, east);
+    return span > 0 &&
+        offset + span <= _lightningLongitudeSpan(this.west, this.east);
+  }
+
   /// A west value greater than east intentionally describes an
   /// antimeridian-crossing viewport.
   String get queryValue => [

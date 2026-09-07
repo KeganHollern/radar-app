@@ -125,6 +125,7 @@ final class RadarController {
 
   Future<void> initialize() async {
     await loadAlertVisibility();
+    if (_disposed) return;
     _radarTimer = Timer.periodic(
       AppConfig.radarRefreshInterval,
       (_) => refreshRadar(),
@@ -171,9 +172,20 @@ final class RadarController {
       stationRevision++;
       stationsError = null;
       final selectedId = selectedStation?.id;
+      final previousMode = mode;
+      final previousElevation = selectedElevation;
       if (selectedId != null) {
         selectedStation = _stationById(selectedId);
         _normalizeSelection();
+      }
+      if (mode.requiresStation &&
+          (selectedId != selectedStation?.id ||
+              previousMode != mode ||
+              previousElevation != selectedElevation)) {
+        snapshot = null;
+        _snapshotStation = null;
+        radarError = null;
+        _invalidateAndRefresh();
       }
       _selectNearbyDetailStation();
     } catch (error) {
@@ -272,6 +284,7 @@ final class RadarController {
     final requestMode = mode;
     final requestStation = _stationForMode(requestMode);
     final requestElevation = selectedElevation;
+    final snapshotAtStart = snapshot;
     _loadingRadar = true;
     _notify();
     try {
@@ -281,10 +294,26 @@ final class RadarController {
         elevation: requestElevation,
       );
       if (_disposed || request != _radarRequest) return;
+      if (requestMode == RadarMode.aggregate &&
+          !identical(snapshot, snapshotAtStart) &&
+          _snapshotStation?.id == requestStation?.id) {
+        // Composite observedAt is the oldest contributing scan and is not a
+        // monotonic generation clock. Prefer the intervening stream update.
+        return;
+      }
+      // HTTP and SSE complete independently. A slower manifest must not
+      // replace a newer scan already received for the same radar.
+      if (_isOlderSnapshot(fresh, requestStation)) return;
       snapshot = fresh;
       _snapshotStation = requestStation;
       radarError = null;
     } catch (error) {
+      if (_disposed || request != _radarRequest) return;
+      if (!identical(snapshot, snapshotAtStart) &&
+          _snapshotStation?.id == requestStation?.id) {
+        // The update stream recovered this request while HTTP was pending.
+        return;
+      }
       final snapshotAtFailure = snapshot;
       var recovered = false;
       if (!_disposed &&
@@ -508,6 +537,12 @@ final class RadarController {
   RadarStation? _stationForMode(RadarMode targetMode) =>
       targetMode == RadarMode.aggregate ? nearbyDetailStation : selectedStation;
 
+  bool _isOlderSnapshot(RadarSnapshot fresh, RadarStation? station) =>
+      mode.requiresStation &&
+      snapshot != null &&
+      _snapshotStation?.id == station?.id &&
+      fresh.observedAt.isBefore(snapshot!.observedAt);
+
   bool _selectNearbyDetailStation() {
     final latitude = _nearbyCenterLatitude;
     final longitude = _nearbyCenterLongitude;
@@ -538,6 +573,11 @@ final class RadarController {
 
   void _normalizeSelection() {
     final station = selectedStation;
+    if (station != null &&
+        mode == RadarMode.stationVelocity &&
+        !station.supportsVelocity) {
+      mode = RadarMode.stationReflectivity;
+    }
     final available = elevations;
     if (station == null || available.isEmpty) {
       selectedElevation = null;
@@ -580,7 +620,8 @@ final class RadarController {
       (update) {
         if (_disposed || generation != _updatesGeneration) return;
         if (update.snapshot != null &&
-            (update.radarChanged || snapshot == null)) {
+            (update.radarChanged || snapshot == null) &&
+            !_isOlderSnapshot(update.snapshot!, streamStation)) {
           snapshot = update.snapshot;
           _snapshotStation = streamStation;
           radarError = null;

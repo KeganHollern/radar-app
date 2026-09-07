@@ -287,7 +287,9 @@ enabled, or required permissions are unavailable, it exits before location or
 network access. Changing the final type to off cancels the unique periodic work;
 Nationwide scope never requests location. Near-me scope requires Android's
 background location permission and sends the latest usable fix rounded to three
-decimal places (roughly 100 meters) to the radar API's point-scoped alert route.
+decimal places (roughly 100 meters) in a JSON body to
+`POST /api/v1/alerts/nearby`. The mobile update requires the backend version that
+provides this route; it does not fall back to putting coordinates in a URL.
 The API and app do not persist that request coordinate. A persistent on-device
 ledger deduplicates stable NWS alert IDs and referenced CAP updates. The first
 nationwide check establishes a baseline rather than flooding the notification
@@ -296,11 +298,17 @@ an HTTP ETag on the device and use conditional requests when the active set is
 unchanged. Enabling a new alert type forces one complete response so that type
 can establish its own baseline. Resuming after an explicit pause also advances a
 persisted baseline generation, preventing alerts accumulated while off from
-flooding the tray. Point-scoped request URLs can remain briefly in
-the Go process's bounded in-memory response-cache keys and are forwarded to NWS,
-but query strings are omitted from access logs and no coordinate is written to
-persistent app or backend storage. The first nearby check does not baseline: a
+flooding the tray. The API forwards rounded points to NWS and uses keyed hashes
+for its bounded in-memory alert-cache keys. It actively purges expired entries;
+query strings are omitted from application access logs and no request coordinate
+is written to persistent app or backend storage. The first nearby check does not baseline: a
 current life-threatening warning is surfaced immediately when monitoring begins.
+
+The Settings test notification checks local delivery independently of real
+weather and periodic scheduling. A blocked Weather alerts channel is treated
+as unavailable notification permission. Release CI builds with resource
+shrinking and verifies that `ic_stat_radar` remains in the APK, since the
+notification plugin looks up this icon by name at runtime.
 
 The map should fill alert geometry with an explicit, accessible event/severity
 color policy and a strong outline. Color is presentation, not an NWS-defined

@@ -74,15 +74,17 @@ void main() {
     () async {
       final store = _MemoryStore(AlertNotificationPreferences.defaults());
       final scheduler = _FakeScheduler();
+      final permissions = _FakePermissions(_granted);
       final controller = AlertNotificationController(
         store: store,
-        permissions: _FakePermissions(_granted),
+        permissions: permissions,
         scheduler: scheduler,
       );
 
       await controller.initialize();
       await controller.completeOnboarding(requestPermissions: true);
 
+      expect(permissions.requests, ['background', 'notifications']);
       expect(controller.preferences.monitoringEnabled, isTrue);
       expect(controller.preferences.baselineGeneration, 1);
       expect(controller.backgroundWorkEnabled, isTrue);
@@ -92,10 +94,38 @@ void main() {
   );
 
   test(
+    'existing nearby monitoring pauses until the current disclosure is accepted',
+    () async {
+      final store = _MemoryStore(
+        AlertNotificationPreferences.defaults().copyWith(
+          onboardingCompleted: true,
+          monitoringEnabled: true,
+        ),
+      );
+      final scheduler = _FakeScheduler();
+      final controller = AlertNotificationController(
+        store: store,
+        permissions: _FakePermissions(_granted),
+        scheduler: scheduler,
+      );
+
+      await controller.initialize();
+
+      expect(controller.backgroundLocationDisclosureAccepted, isFalse);
+      expect(controller.needsOnboarding, isTrue);
+      expect(controller.backgroundWorkEnabled, isFalse);
+      expect(scheduler.enabled, [false]);
+      controller.dispose();
+    },
+  );
+
+  test(
     'scheduler starts with permissions and stops when all types are off',
     () async {
       final store = _MemoryStore(
         AlertNotificationPreferences.defaults().copyWith(
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
@@ -188,6 +218,8 @@ void main() {
       final store = _DelayedMemoryStore(
         AlertNotificationPreferences.defaults().copyWith(
           onboardingCompleted: true,
+          backgroundLocationDisclosureVersion:
+              currentBackgroundLocationDisclosureVersion,
           monitoringEnabled: true,
         ),
       );
@@ -213,6 +245,76 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('a type change retries a failed background schedule', () async {
+    final scheduler = _FakeScheduler()..failNext = true;
+    final controller = AlertNotificationController(
+      store: _MemoryStore(
+        AlertNotificationPreferences.defaults().copyWith(
+          scope: AlertNotificationScope.nationwide,
+          monitoringEnabled: true,
+        ),
+      ),
+      permissions: _FakePermissions(_granted),
+      scheduler: scheduler,
+    );
+    await controller.initialize();
+    expect(controller.backgroundWorkActive, isFalse);
+
+    await controller.setAlertTypeEnabled('Air Quality Alert', true);
+
+    expect(scheduler.enabled, [true, true]);
+    expect(controller.backgroundWorkActive, isTrue);
+    controller.dispose();
+  });
+
+  test('a test notification works with background monitoring off', () async {
+    var sent = 0;
+    final store = _MemoryStore(AlertNotificationPreferences.defaults());
+    final scheduler = _FakeScheduler();
+    final controller = AlertNotificationController(
+      store: store,
+      permissions: _FakePermissions(_granted),
+      scheduler: scheduler,
+      sendTestNotification: () async {
+        sent++;
+      },
+    );
+    await controller.initialize();
+
+    expect(await controller.sendTestNotification(), startsWith('Test sent.'));
+    expect(sent, 1);
+    expect(store.preferences.monitoringEnabled, isFalse);
+    expect(scheduler.enabled, [false]);
+    controller.dispose();
+  });
+
+  test('a test rechecks permission and reports platform failures', () async {
+    var sent = 0;
+    final permissions = _FakePermissions(_granted);
+    final controller = AlertNotificationController(
+      store: _MemoryStore(AlertNotificationPreferences.defaults()),
+      permissions: permissions,
+      scheduler: _FakeScheduler(),
+      sendTestNotification: () async {
+        sent++;
+        throw StateError('invalid icon');
+      },
+    );
+    await controller.initialize();
+    permissions.value = _denied;
+    expect(
+      await controller.sendTestNotification(),
+      contains('Android settings'),
+    );
+    expect(sent, 0);
+
+    permissions.value = _granted;
+    expect(await controller.sendTestNotification(), contains('failed'));
+    expect(sent, 1);
+    expect(controller.busy, isFalse);
+    controller.dispose();
+  });
 }
 
 const _granted = AlertNotificationPermissionSnapshot(
@@ -297,6 +399,7 @@ final class _FakePermissions implements AlertNotificationPermissionGateway {
   int notificationRequests = 0;
   int backgroundRequests = 0;
   int settingsOpens = 0;
+  final List<String> requests = [];
 
   @override
   Future<bool> openSettings() async {
@@ -308,12 +411,14 @@ final class _FakePermissions implements AlertNotificationPermissionGateway {
   Future<AlertNotificationPermissionSnapshot>
   requestBackgroundLocation() async {
     backgroundRequests++;
+    requests.add('background');
     return value;
   }
 
   @override
   Future<AlertNotificationPermissionSnapshot> requestNotifications() async {
     notificationRequests++;
+    requests.add('notifications');
     return value;
   }
 
@@ -323,9 +428,14 @@ final class _FakePermissions implements AlertNotificationPermissionGateway {
 
 final class _FakeScheduler implements AlertNotificationScheduler {
   final List<bool> enabled = [];
+  bool failNext = false;
 
   @override
   Future<void> sync({required bool enabled}) async {
     this.enabled.add(enabled);
+    if (failNext) {
+      failNext = false;
+      throw StateError('scheduler unavailable');
+    }
   }
 }

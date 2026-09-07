@@ -49,6 +49,10 @@ void main() {
       findsOneWidget,
     );
     expect(
+      find.byKey(const ValueKey('settings-destination-privacy')),
+      findsOneWidget,
+    );
+    expect(
       find.byKey(const ValueKey('alert-type-Air Quality Alert')),
       findsNothing,
     );

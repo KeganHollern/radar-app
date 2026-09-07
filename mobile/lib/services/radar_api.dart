@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:http/http.dart' as http;
 
 import '../models/radar_models.dart';
+import 'http_event_stream.dart';
 
 final class RadarApiException implements Exception {
   const RadarApiException(this.message, {this.statusCode});
@@ -16,12 +18,17 @@ final class RadarApiException implements Exception {
 }
 
 final class RadarApi {
-  RadarApi({required String baseUrl, http.Client? client})
-    : baseUrl = baseUrl.replaceAll(RegExp(r'/+$'), ''),
-      _client = client ?? http.Client();
+  RadarApi({
+    required String baseUrl,
+    http.Client? client,
+    Duration streamIdleTimeout = const Duration(seconds: 45),
+  }) : baseUrl = baseUrl.replaceAll(RegExp(r'/+$'), ''),
+       _client = client ?? http.Client(),
+       _streamIdleTimeout = streamIdleTimeout;
 
   final String baseUrl;
   final http.Client _client;
+  final Duration _streamIdleTimeout;
   String? _alertsEtag;
   List<WeatherAlert> _cachedAlerts = const [];
 
@@ -111,64 +118,94 @@ final class RadarApi {
     required RadarMode mode,
     RadarStation? station,
     String? elevation,
-  }) async* {
+  }) {
     final query = <String, String>{'product': mode.apiValue};
     if (station != null) query['station'] = station.id;
     if (elevation != null && elevation.isNotEmpty) {
       query['elevation'] = elevation;
     }
-    final request = http.Request('GET', _uri('/api/v1/updates', query));
-    request.headers.addAll(const {
-      'Accept': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-    });
-    final response = await _client
-        .send(request)
-        .timeout(const Duration(seconds: 12));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final body = await response.stream.bytesToString();
-      throw RadarApiException(
-        body.isEmpty
-            ? 'Live update stream returned ${response.statusCode}'
-            : body,
-        statusCode: response.statusCode,
-      );
-    }
-
-    String event = 'message';
-    final data = StringBuffer();
-    await for (final line
-        in response.stream
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())) {
-      if (line.isEmpty) {
-        if (data.isNotEmpty) {
-          final decoded = jsonDecode(data.toString());
-          if (decoded is Map) {
-            final object = Map<String, dynamic>.from(decoded);
-            final radar = object['radar'];
-            yield RadarUpdate(
-              event: event,
-              snapshot: radar is Map
-                  ? RadarSnapshot.fromJson(Map<String, dynamic>.from(radar))
-                  : null,
-              radarChanged: object['radarChanged'] == true,
-              refreshAlerts: object['refreshAlerts'] == true,
+    // A transformer propagates cancellation even when no complete SSE event
+    // arrives. An async* parser can leave station changes waiting on its next
+    // yield while the previous connection is silent.
+    return openHttpEventStream<RadarUpdate>(
+      client: _client,
+      uri: _uri('/api/v1/updates', query),
+      headers: const {
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      },
+      requestTimeout: const Duration(seconds: 12),
+      parse: (response) {
+        final body = response.stream.timeout(
+          _streamIdleTimeout,
+          onTimeout: (sink) {
+            sink.addError(
+              const RadarApiException(
+                'Radar stream stopped responding; reconnecting',
+              ),
             );
-          }
+            sink.close();
+          },
+        );
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          return body
+              .transform(utf8.decoder)
+              .join()
+              .asStream()
+              .map<RadarUpdate>((body) {
+                throw RadarApiException(
+                  body.isEmpty
+                      ? 'Live update stream returned ${response.statusCode}'
+                      : body,
+                  statusCode: response.statusCode,
+                );
+              });
         }
-        event = 'message';
-        data.clear();
-        continue;
-      }
-      if (line.startsWith(':')) continue;
-      if (line.startsWith('event:')) {
-        event = line.substring(6).trim();
-      } else if (line.startsWith('data:')) {
-        if (data.isNotEmpty) data.write('\n');
-        data.write(line.substring(5).trimLeft());
-      }
-    }
+
+        var event = 'message';
+        final data = StringBuffer();
+        return body
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .transform(
+              StreamTransformer<String, RadarUpdate>.fromHandlers(
+                handleData: (line, sink) {
+                  if (line.isEmpty) {
+                    final eventName = event;
+                    final encoded = data.toString();
+                    event = 'message';
+                    data.clear();
+                    if (encoded.isEmpty) return;
+                    try {
+                      final decoded = jsonDecode(encoded);
+                      if (decoded is! Map) return;
+                      final radar = decoded['radar'];
+                      sink.add(
+                        RadarUpdate(
+                          event: eventName,
+                          snapshot: radar is Map
+                              ? RadarSnapshot.fromJson(
+                                  Map<String, dynamic>.from(radar),
+                                )
+                              : null,
+                          radarChanged: decoded['radarChanged'] == true,
+                          refreshAlerts: decoded['refreshAlerts'] == true,
+                        ),
+                      );
+                    } catch (error, stackTrace) {
+                      sink.addError(error, stackTrace);
+                    }
+                  } else if (line.startsWith('event:')) {
+                    event = line.substring(6).trim();
+                  } else if (line.startsWith('data:')) {
+                    if (data.isNotEmpty) data.write('\n');
+                    data.write(line.substring(5).trimLeft());
+                  }
+                },
+              ),
+            );
+      },
+    );
   }
 
   String tileTemplate({

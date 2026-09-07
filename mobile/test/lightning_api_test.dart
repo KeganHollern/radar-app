@@ -133,6 +133,29 @@ void main() {
     await body.close();
     api.close();
   });
+
+  test(
+    'cancelling a silent lightning stream releases the response immediately',
+    () async {
+      var cancelled = false;
+      final body = StreamController<List<int>>(
+        onCancel: () => cancelled = true,
+      );
+      final api = LightningApi(
+        baseUrl: 'https://radar.test',
+        client: MockClient.streaming(
+          (_, _) async => http.StreamedResponse(body.stream, 200),
+        ),
+      );
+      final subscription = api.watchUpdates().listen((_) {});
+      await pumpEventQueue();
+
+      await subscription.cancel();
+      expect(cancelled, isTrue);
+      await body.close();
+      api.close();
+    },
+  );
 }
 
 Map<String, dynamic> _envelope(String generation) => {

@@ -9,7 +9,13 @@ enum LocationAccess {
 }
 
 final class LocationService {
-  Future<LocationAccess> requestAccess() async {
+  /// Reads the current location setting without opening a permission prompt.
+  Future<LocationAccess> checkAccess() => _access(request: false);
+
+  /// Opens Android's foreground-location prompt when access is not yet granted.
+  Future<LocationAccess> requestAccess() => _access(request: true);
+
+  Future<LocationAccess> _access({required bool request}) async {
     // Some Android emulator/system-image combinations surface a disabled
     // provider as a platform exception instead of returning `false`. Treat it
     // like the normal disabled-service state so lifecycle resumes never leak
@@ -21,16 +27,22 @@ final class LocationService {
     } catch (_) {
       return LocationAccess.servicesDisabled;
     }
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (request && permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      return switch (permission) {
+        LocationPermission.always ||
+        LocationPermission.whileInUse => LocationAccess.granted,
+        LocationPermission.deniedForever => LocationAccess.deniedForever,
+        _ => LocationAccess.denied,
+      };
+    } catch (_) {
+      // Permission checks and prompts can also fail, including while Android
+      // recreates the activity. Keep the map usable and allow a later retry.
+      return LocationAccess.denied;
     }
-    return switch (permission) {
-      LocationPermission.always ||
-      LocationPermission.whileInUse => LocationAccess.granted,
-      LocationPermission.deniedForever => LocationAccess.deniedForever,
-      _ => LocationAccess.denied,
-    };
   }
 
   Future<bool> openSettings(LocationAccess access) =>

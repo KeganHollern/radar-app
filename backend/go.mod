@@ -1,6 +1,6 @@
 module github.com/KeganHollern/radar-app/backend
 
-go 1.25.0
+go 1.25.13
 
 require github.com/batchatco/go-native-netcdf v0.0.0-20260314195334-c3bf89299976
 

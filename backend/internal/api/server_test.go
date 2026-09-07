@@ -36,6 +36,106 @@ func TestAlertsURLIncludesActiveUpdates(t *testing.T) {
 	}
 }
 
+func TestNearbyAlertsKeepsRoundedLocationOutOfRequestURL(t *testing.T) {
+	var upstreamPoint string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPoint = r.URL.Query().Get("point")
+		w.Header().Set("Content-Type", "application/geo+json")
+		_, _ = io.WriteString(w, `{"type":"FeatureCollection","features":[]}`)
+	}))
+	defer provider.Close()
+
+	c := config.Config{
+		NWSBaseURL:       provider.URL,
+		UserAgent:        "radar-test",
+		UpstreamTimeout:  time.Second,
+		AlertTTL:         30 * time.Second,
+		StaleTTL:         10 * time.Minute,
+		CacheMaxEntries:  8,
+		CacheMaxBytes:    1 << 20,
+		MaxUpstreamBytes: 1 << 20,
+	}
+	server := New(c, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/alerts/nearby",
+		strings.NewReader(`{"latitude":30.267153,"longitude":-97.743057}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if request.URL.RawQuery != "" {
+		t.Fatalf("location leaked into request URL: %q", request.URL.RawQuery)
+	}
+	if upstreamPoint != "30.267,-97.743" {
+		t.Fatalf("upstream point = %q", upstreamPoint)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+
+	legacy := httptest.NewRecorder()
+	server.Handler().ServeHTTP(
+		legacy,
+		httptest.NewRequest(http.MethodGet, "/api/v1/alerts?point=30.267153,-97.743057", nil),
+	)
+	if legacy.Code != http.StatusOK || legacy.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("legacy nearby response = %d, Cache-Control %q", legacy.Code, legacy.Header().Get("Cache-Control"))
+	}
+}
+
+func TestNearbyAlertsRejectsMalformedContract(t *testing.T) {
+	server := New(config.Config{
+		UserAgent:        "radar-test",
+		UpstreamTimeout:  time.Second,
+		AlertTTL:         30 * time.Second,
+		StaleTTL:         time.Minute,
+		CacheMaxEntries:  8,
+		CacheMaxBytes:    1 << 20,
+		MaxUpstreamBytes: 1 << 20,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for _, test := range []struct {
+		name        string
+		contentType string
+		body        string
+		wantStatus  int
+	}{
+		{name: "missing content type", body: `{}`, wantStatus: http.StatusUnsupportedMediaType},
+		{name: "unknown field", contentType: "application/json", body: `{"latitude":30,"longitude":-97,"exact":true}`, wantStatus: http.StatusBadRequest},
+		{name: "missing coordinate", contentType: "application/json", body: `{"latitude":30}`, wantStatus: http.StatusBadRequest},
+		{name: "out of range", contentType: "application/json", body: `{"latitude":91,"longitude":-97}`, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/alerts/nearby", strings.NewReader(test.body))
+			if test.contentType != "" {
+				request.Header.Set("Content-Type", test.contentType)
+			}
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestPrivateScopeKeyDoesNotRetainLocation(t *testing.T) {
+	s := &Server{config: config.Config{AggregateTokenKey: strings.Repeat("k", 32)}}
+	target := "https://api.weather.gov/alerts/active?point=30.267%2C-97.743&status=actual"
+	key := s.privateScopeKey(target)
+	if len(key) != 64 || strings.Contains(key, "30.267") || strings.Contains(key, "97.743") {
+		t.Fatalf("location-bearing target was not converted to an opaque key: %q", key)
+	}
+	if key == (&Server{config: config.Config{AggregateTokenKey: strings.Repeat("x", 32)}}).privateScopeKey(target) {
+		t.Fatal("private scope key did not depend on the server secret")
+	}
+}
+
 func TestWriteCachedHonorsETag(t *testing.T) {
 	body := []byte("same response")
 	first := httptest.NewRecorder()
@@ -203,6 +303,21 @@ func TestNormalizeStationsAddsCapabilitiesAndDeduplicates(t *testing.T) {
 	}
 	if got := len(properties["elevations"].([]any)); got != 2 {
 		t.Fatalf("got %d elevations", got)
+	}
+}
+
+func TestNormalizeStationsRejectsInvalidOrEmptyCatalogs(t *testing.T) {
+	tests := map[string]string{
+		"wrong schema":     `{}`,
+		"empty collection": `{"type":"FeatureCollection","features":[]}`,
+		"no valid radar":   `{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[181,32]},"properties":{"rda_id":"KFWS"}}]}`,
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := normalizeStations([]byte(input), []string{"0.5"}, []string{"0.5"}); err == nil {
+				t.Fatal("invalid station catalog was accepted")
+			}
+		})
 	}
 }
 

@@ -13,6 +13,11 @@ final class AppConfig {
     defaultValue: 'https://tiles.openfreemap.org/styles/dark',
   );
 
+  static const String privacyPolicyUrl = String.fromEnvironment(
+    'PRIVACY_POLICY_URL',
+    defaultValue: 'https://radar.lystic.dev/privacy',
+  );
+
   /// Compact credit announced by the map source button.
   static const String mapAttributionCompact = String.fromEnvironment(
     'MAP_ATTRIBUTION_COMPACT',

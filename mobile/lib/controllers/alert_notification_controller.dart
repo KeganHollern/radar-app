@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../models/alert_notification_models.dart';
+import '../services/alert_local_notifier.dart';
 import '../services/alert_notification_background.dart';
 import '../services/alert_notification_permissions.dart';
 import '../services/alert_notification_store.dart';
@@ -10,14 +11,18 @@ final class AlertNotificationController extends ChangeNotifier {
     AlertNotificationStore? store,
     AlertNotificationPermissionGateway? permissions,
     AlertNotificationScheduler? scheduler,
+    Future<void> Function()? sendTestNotification,
   }) : _store = store ?? SharedPreferencesAlertNotificationStore(),
        _permissions =
            permissions ?? PlatformAlertNotificationPermissionGateway(),
-       _scheduler = scheduler ?? WorkmanagerAlertNotificationScheduler();
+       _scheduler = scheduler ?? WorkmanagerAlertNotificationScheduler(),
+       _sendTestNotification =
+           sendTestNotification ?? LocalWeatherAlertNotifier().showTest;
 
   final AlertNotificationStore _store;
   final AlertNotificationPermissionGateway _permissions;
   final AlertNotificationScheduler _scheduler;
+  final Future<void> Function() _sendTestNotification;
 
   AlertNotificationPreferences _preferences =
       AlertNotificationPreferences.defaults();
@@ -32,10 +37,16 @@ final class AlertNotificationController extends ChangeNotifier {
   AlertNotificationPermissionSnapshot get permission => _permission;
   bool get initialized => _initialized;
   bool get busy => _busy;
+  bool get backgroundLocationDisclosureAccepted =>
+      _preferences.backgroundLocationDisclosureVersion >=
+      currentBackgroundLocationDisclosureVersion;
   bool get needsOnboarding =>
       _initialized &&
       _permission.supported &&
-      !_preferences.onboardingCompleted;
+      (!_preferences.onboardingCompleted ||
+          (_preferences.monitoringEnabled &&
+              _preferences.scope == AlertNotificationScope.nearby &&
+              !backgroundLocationDisclosureAccepted));
 
   bool get backgroundWorkEnabled =>
       _backgroundWorkEnabledFor(_preferences, _permission);
@@ -66,14 +77,19 @@ final class AlertNotificationController extends ChangeNotifier {
     _setBusy(true);
     try {
       if (requestPermissions) {
-        _permission = await _permissions.requestNotifications();
-        if (_permission.notificationsGranted &&
-            _preferences.scope == AlertNotificationScope.nearby) {
+        // The prominent disclosure in the onboarding dialog must immediately
+        // precede Android's background-location request. Ask for notification
+        // permission only after the location request has completed.
+        if (_preferences.scope == AlertNotificationScope.nearby) {
           _permission = await _permissions.requestBackgroundLocation();
         }
+        _permission = await _permissions.requestNotifications();
       }
       _preferences = _preferences.copyWith(
         onboardingCompleted: true,
+        backgroundLocationDisclosureVersion: requestPermissions
+            ? currentBackgroundLocationDisclosureVersion
+            : _preferences.backgroundLocationDisclosureVersion,
         monitoringEnabled: requestPermissions,
         baselineGeneration:
             requestPermissions && !_preferences.monitoringEnabled
@@ -215,11 +231,18 @@ final class AlertNotificationController extends ChangeNotifier {
     if (_busy) return;
     _setBusy(true);
     try {
+      _preferences = _preferences.copyWith(
+        backgroundLocationDisclosureVersion:
+            currentBackgroundLocationDisclosureVersion,
+      );
       _permission = await _permissions.requestBackgroundLocation();
       if (!_permission.backgroundLocationGranted) {
         await _permissions.openSettings();
       }
-      await _queueSchedulerSync(backgroundWorkEnabled);
+      await _queuePreferencesCommit(
+        _preferences,
+        schedulerEnabled: backgroundWorkEnabled,
+      );
     } finally {
       _setBusy(false);
     }
@@ -227,13 +250,33 @@ final class AlertNotificationController extends ChangeNotifier {
 
   Future<void> openPermissionSettings() => _permissions.openSettings();
 
+  Future<String> sendTestNotification() async {
+    if (_busy) return 'Wait for the current notification action to finish.';
+    _setBusy(true);
+    try {
+      _permission = await _permissions.status();
+      if (!_permission.supported || !_permission.notificationsGranted) {
+        return 'Enable notifications and the Weather alerts channel in Android settings, then try again.';
+      }
+      await _sendTestNotification();
+      return 'Test sent. Check your notification tray. This tests display only; weather checks run separately.';
+    } catch (_) {
+      return 'The test notification failed. Check Android notification settings and try again.';
+    } finally {
+      _setBusy(false);
+    }
+  }
+
   Future<void> _queuePreferencesCommit(
     AlertNotificationPreferences preferences, {
     bool? schedulerEnabled,
   }) => _enqueueSideEffect(() async {
     await _store.savePreferences(preferences);
-    if (schedulerEnabled != null) {
-      await _syncScheduler(schedulerEnabled);
+    if (schedulerEnabled != null || !_schedulerHealthy) {
+      await _syncScheduler(
+        schedulerEnabled ?? _backgroundWorkEnabledFor(preferences, _permission),
+      );
+      notifyListeners();
     }
   });
 
@@ -275,4 +318,6 @@ bool _backgroundWorkEnabledFor(
     permission.supported &&
     permission.notificationsGranted &&
     (preferences.scope == AlertNotificationScope.nationwide ||
-        permission.backgroundLocationGranted);
+        (preferences.backgroundLocationDisclosureVersion >=
+                currentBackgroundLocationDisclosureVersion &&
+            permission.backgroundLocationGranted));

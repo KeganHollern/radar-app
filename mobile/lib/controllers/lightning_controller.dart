@@ -205,7 +205,6 @@ final class LightningController extends ChangeNotifier {
           ? LightningStatus.stale
           : LightningStatus.live;
       _error = null;
-      _reconnectAttempt = 0;
       notifyListeners();
     } catch (error) {
       if (!_isCurrent(generation)) return;
@@ -225,6 +224,11 @@ final class LightningController extends ChangeNotifier {
       },
       onDone: () {
         if (!_isCurrent(generation)) return;
+        if (_status == LightningStatus.live ||
+            _status == LightningStatus.stale) {
+          _status = LightningStatus.connecting;
+          notifyListeners();
+        }
         _scheduleReconnect(generation);
       },
       cancelOnError: false,
